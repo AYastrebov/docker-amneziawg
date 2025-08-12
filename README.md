@@ -1,1 +1,0 @@
-AmneziaWG image

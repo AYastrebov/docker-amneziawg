@@ -1,20 +1,28 @@
 services:
   amneziawg:
-    image: docker-amneziawg
+    # This assumes you have built the image locally with the tag 'amneziawg-go'
+    image: amneziawg-go
     container_name: amneziawg
-    ports:
-      - "51820:51820/udp" # HostPort:ContainerPort
-    volumes:
-      - ./config:/config/amneziawg
+    # If you haven't built the image, you can uncomment the following
+    # lines to have docker-compose build it for you.
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    restart: unless-stopped
+    # Grant necessary capabilities for network management
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
+    # Grant permission to modify necessary kernel parameters.
+    # This is the secure way to handle the permissions needed by wg-quick.
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
       - net.ipv6.conf.all.disable_ipv6=0
-    restart: unless-stopped
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Europe/Moscow
+    devices:
+      - /dev/net/tun
+    volumes:
+      # Mount your local WireGuard configuration file
+      - ./awg0.conf:/etc/wireguard/awg0.conf
+    # The command to run inside the container, specifying the interface name
+    command: awg0
