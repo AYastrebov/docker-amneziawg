@@ -20,7 +20,7 @@ RUN CGO_ENABLED=1 go build -ldflags '-linkmode external -extldflags "-fno-PIC -s
 FROM alpine:3.19
 
 # Define the release version of amneziawg-tools to download
-ARG AWGTOOLS_RELEASE="1.0.20250706"
+ARG AWGTOOLS_RELEASE="1.0.20250903"
 
 # Install runtime dependencies and tools for downloading
 RUN apk --no-cache add iproute2 iptables bash wget unzip openresolv
