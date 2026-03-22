@@ -1,0 +1,413 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# shellcheck disable=SC2016,SC1091,SC2183
+
+mkdir -p /config/wg_confs
+
+# migration to subfolder for wg confs
+if [[ -z "$(ls -A /config/wg_confs)" ]]; then
+    if [[ -f /config/awg0.conf ]]; then
+        echo "**** Migrating legacy config /config/awg0.conf -> /config/wg_confs/wg0.conf ****"
+        cp /config/awg0.conf /config/wg_confs/wg0.conf
+        rm -rf /config/awg0.conf || :
+    elif [[ -f /config/wg0.conf ]]; then
+        echo "**** Migrating legacy config /config/wg0.conf -> /config/wg_confs/wg0.conf ****"
+        cp /config/wg0.conf /config/wg_confs/wg0.conf
+        rm -rf /config/wg0.conf || :
+    fi
+fi
+
+# prepare templates
+if [[ ! -f /config/templates/server.conf ]]; then
+    cp /defaults/server.conf /config/templates/server.conf
+fi
+if [[ ! -f /config/templates/peer.conf ]]; then
+    cp /defaults/peer.conf /config/templates/peer.conf
+fi
+# add preshared key to user templates (backwards compatibility)
+if ! grep -q 'PresharedKey' /config/templates/peer.conf; then
+    sed -i 's|^Endpoint|PresharedKey = \$\(cat /config/\${PEER_ID}/presharedkey-\${PEER_ID}\)\nEndpoint|' /config/templates/peer.conf
+fi
+
+# ============================================================================
+# AWG obfuscation parameter helpers
+# ============================================================================
+
+# AWG_VERSION controls the protocol feature set:
+#   "2.0" (default) - Full AWG 2.0: S3/S4 padding, H1-H4 range support,
+#                     I1-I5 Custom Protocol Signatures (auto-generated if not set)
+#   "1.5"           - Legacy mode: S3=S4=0, no I1-I5 signatures,
+#                     compatible with AmneziaVPN < 4.8.12.9
+AWG_VERSION=${AWG_VERSION:-2.0}
+
+# Generate a random hex string of N bytes (2*N hex chars)
+random_hex() {
+    local nbytes=$1
+    head -c "$nbytes" /dev/urandom | od -An -tx1 | tr -d ' \n'
+}
+
+# Generate default I1 signature for AWG 2.0
+# Mimics a TLS Client Hello to evade DPI
+generate_default_signatures() {
+    # TLS record header (0x16=handshake, 0x0301=TLS 1.0 compat) + random payload
+    AWG_I1=${AWG_I1:-"<b 0x160301><r 2><b 0x0100><r 32><b 0x00><r 1><b 0x0303><r 32><b 0x20><r 32><b 0x0002><r 2><b 0x0100>"}
+    # I2-I5 are optional, leave empty if not set
+    AWG_I2=${AWG_I2:-}
+    AWG_I3=${AWG_I3:-}
+    AWG_I4=${AWG_I4:-}
+    AWG_I5=${AWG_I5:-}
+}
+
+# Generate random AWG obfuscation parameters if not set
+generate_awg_params() {
+    echo "**** AmneziaWG version: ${AWG_VERSION} ****"
+
+    # Core parameters (all versions)
+    AWG_JC=${AWG_JC:-$(shuf -i 3-8 -n 1)}
+    AWG_JMIN=${AWG_JMIN:-$(shuf -i 40-80 -n 1)}
+    AWG_JMAX=${AWG_JMAX:-$(shuf -i 500-1000 -n 1)}
+    AWG_S1=${AWG_S1:-$(shuf -i 15-150 -n 1)}
+    AWG_S2=${AWG_S2:-$(shuf -i 15-150 -n 1)}
+    AWG_H1=${AWG_H1:-$(shuf -i 5-2147483647 -n 1)}
+    AWG_H2=${AWG_H2:-$(shuf -i 5-2147483647 -n 1)}
+    AWG_H3=${AWG_H3:-$(shuf -i 5-2147483647 -n 1)}
+    AWG_H4=${AWG_H4:-$(shuf -i 5-2147483647 -n 1)}
+
+    if [[ "${AWG_VERSION}" == "2.0" ]]; then
+        # AWG 2.0: S3/S4 padding and I1-I5 signatures
+        AWG_S3=${AWG_S3:-$(shuf -i 15-150 -n 1)}
+        AWG_S4=${AWG_S4:-$(shuf -i 15-150 -n 1)}
+        generate_default_signatures
+    else
+        # AWG 1.5 fallback: no S3/S4 padding, no signatures
+        AWG_S3=${AWG_S3:-0}
+        AWG_S4=${AWG_S4:-0}
+        AWG_I1=${AWG_I1:-}
+        AWG_I2=${AWG_I2:-}
+        AWG_I3=${AWG_I3:-}
+        AWG_I4=${AWG_I4:-}
+        AWG_I5=${AWG_I5:-}
+    fi
+
+    # Save params to file for persistence
+    cat > /config/server/awg_params <<EOF
+AWG_VERSION=$AWG_VERSION
+AWG_JC=$AWG_JC
+AWG_JMIN=$AWG_JMIN
+AWG_JMAX=$AWG_JMAX
+AWG_S1=$AWG_S1
+AWG_S2=$AWG_S2
+AWG_S3=$AWG_S3
+AWG_S4=$AWG_S4
+AWG_H1=$AWG_H1
+AWG_H2=$AWG_H2
+AWG_H3=$AWG_H3
+AWG_H4=$AWG_H4
+AWG_I1=$AWG_I1
+AWG_I2=$AWG_I2
+AWG_I3=$AWG_I3
+AWG_I4=$AWG_I4
+AWG_I5=$AWG_I5
+EOF
+
+    echo "**** AWG Obfuscation Parameters ****"
+    echo "  Jc=$AWG_JC, Jmin=$AWG_JMIN, Jmax=$AWG_JMAX"
+    echo "  S1=$AWG_S1, S2=$AWG_S2, S3=$AWG_S3, S4=$AWG_S4"
+    echo "  H1=$AWG_H1, H2=$AWG_H2, H3=$AWG_H3, H4=$AWG_H4"
+    if [[ -n "$AWG_I1" ]]; then
+        echo "  I1-I5 Custom Protocol Signatures: enabled"
+    else
+        echo "  I1-I5 Custom Protocol Signatures: disabled (AWG 1.5 mode)"
+    fi
+
+    # Validation warnings
+    if [[ "$AWG_JMIN" -gt "$AWG_JMAX" ]] 2>/dev/null; then
+        echo "**** WARNING: Jmin ($AWG_JMIN) > Jmax ($AWG_JMAX) - junk packets may not work correctly ****"
+    fi
+    local s1_plus_56=$((AWG_S1 + 56))
+    if [[ "$s1_plus_56" -eq "$AWG_S2" ]] 2>/dev/null; then
+        echo "**** WARNING: S1+56 ($s1_plus_56) equals S2 ($AWG_S2) - this should be avoided ****"
+    fi
+    # Check H1-H4 uniqueness (only for fixed values, not ranges)
+    if [[ "$AWG_H1" != *-* ]] && [[ "$AWG_H2" != *-* ]] && [[ "$AWG_H3" != *-* ]] && [[ "$AWG_H4" != *-* ]]; then
+        local -A h_values
+        for h_name in AWG_H1 AWG_H2 AWG_H3 AWG_H4; do
+            local h_val="${!h_name}"
+            if [[ -n "${h_values[$h_val]+x}" ]]; then
+                echo "**** WARNING: $h_name has duplicate value $h_val (same as ${h_values[$h_val]}) - H1-H4 should be unique ****"
+            fi
+            h_values[$h_val]="$h_name"
+        done
+    fi
+}
+
+# Load saved AWG params as fallback (do NOT use source - it overrides env vars)
+load_awg_params() {
+    if [[ -f /config/server/awg_params ]]; then
+        AWG_VERSION=${AWG_VERSION:-$(grep "^AWG_VERSION=" /config/server/awg_params | cut -d= -f2)}
+        AWG_JC=${AWG_JC:-$(grep "^AWG_JC=" /config/server/awg_params | cut -d= -f2)}
+        AWG_JMIN=${AWG_JMIN:-$(grep "^AWG_JMIN=" /config/server/awg_params | cut -d= -f2)}
+        AWG_JMAX=${AWG_JMAX:-$(grep "^AWG_JMAX=" /config/server/awg_params | cut -d= -f2)}
+        AWG_S1=${AWG_S1:-$(grep "^AWG_S1=" /config/server/awg_params | cut -d= -f2)}
+        AWG_S2=${AWG_S2:-$(grep "^AWG_S2=" /config/server/awg_params | cut -d= -f2)}
+        AWG_S3=${AWG_S3:-$(grep "^AWG_S3=" /config/server/awg_params | cut -d= -f2)}
+        AWG_S4=${AWG_S4:-$(grep "^AWG_S4=" /config/server/awg_params | cut -d= -f2)}
+        AWG_H1=${AWG_H1:-$(grep "^AWG_H1=" /config/server/awg_params | cut -d= -f2)}
+        AWG_H2=${AWG_H2:-$(grep "^AWG_H2=" /config/server/awg_params | cut -d= -f2)}
+        AWG_H3=${AWG_H3:-$(grep "^AWG_H3=" /config/server/awg_params | cut -d= -f2)}
+        AWG_H4=${AWG_H4:-$(grep "^AWG_H4=" /config/server/awg_params | cut -d= -f2)}
+        AWG_I1=${AWG_I1:-$(grep "^AWG_I1=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_I2=${AWG_I2:-$(grep "^AWG_I2=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_I3=${AWG_I3:-$(grep "^AWG_I3=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_I4=${AWG_I4:-$(grep "^AWG_I4=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_I5=${AWG_I5:-$(grep "^AWG_I5=" /config/server/awg_params | cut -d= -f2-)}
+    fi
+}
+
+# Append I1-I5 to a config file if set
+append_awg_signatures() {
+    local conf_file=$1
+    [[ -n "$AWG_I1" ]] && echo "I1 = ${AWG_I1}" >> "$conf_file"
+    [[ -n "$AWG_I2" ]] && echo "I2 = ${AWG_I2}" >> "$conf_file"
+    [[ -n "$AWG_I3" ]] && echo "I3 = ${AWG_I3}" >> "$conf_file"
+    [[ -n "$AWG_I4" ]] && echo "I4 = ${AWG_I4}" >> "$conf_file"
+    [[ -n "$AWG_I5" ]] && echo "I5 = ${AWG_I5}" >> "$conf_file"
+}
+
+# ============================================================================
+# Config generation (matches LinuxServer docker-wireguard pattern)
+# ============================================================================
+
+generate_confs () {
+    mkdir -p /config/server
+    if [[ ! -f /config/server/privatekey-server ]]; then
+        umask 077
+        awg genkey | tee /config/server/privatekey-server | awg pubkey > /config/server/publickey-server
+    fi
+    eval "$(printf %s)
+    cat <<DUDE > /config/wg_confs/wg0.conf
+$(cat /config/templates/server.conf)
+
+DUDE"
+    # Append I1-I5 signature packets to server conf
+    append_awg_signatures /config/wg_confs/wg0.conf
+    for i in "${PEERS_ARRAY[@]}"; do
+        if [[ ! "${i}" =~ ^[[:alnum:]]+$ ]]; then
+            echo "**** Peer ${i} contains non-alphanumeric characters and thus will be skipped. No config for peer ${i} will be generated. ****"
+        else
+            if [[ "${i}" =~ ^[0-9]+$ ]]; then
+                PEER_ID="peer${i}"
+            else
+                PEER_ID="peer_${i}"
+            fi
+            mkdir -p "/config/${PEER_ID}"
+            if [[ ! -f "/config/${PEER_ID}/privatekey-${PEER_ID}" ]]; then
+                umask 077
+                awg genkey | tee "/config/${PEER_ID}/privatekey-${PEER_ID}" | awg pubkey > "/config/${PEER_ID}/publickey-${PEER_ID}"
+                awg genpsk > "/config/${PEER_ID}/presharedkey-${PEER_ID}"
+            fi
+            if [[ -f "/config/${PEER_ID}/${PEER_ID}.conf" ]]; then
+                CLIENT_IP=$(grep "Address" "/config/${PEER_ID}/${PEER_ID}.conf" | awk '{print $NF}')
+                if [[ -n "${ORIG_INTERFACE}" ]] && [[ "${INTERFACE}" != "${ORIG_INTERFACE}" ]]; then
+                    CLIENT_IP="${CLIENT_IP//${ORIG_INTERFACE}/${INTERFACE}}"
+                fi
+            else
+                for idx in {2..254}; do
+                    PROPOSED_IP="${INTERFACE}.${idx}"
+                    if ! grep -q -R "${PROPOSED_IP}" /config/peer*/*.conf 2>/dev/null && ([[ -z "${ORIG_INTERFACE}" ]] || ! grep -q -R "${ORIG_INTERFACE}.${idx}" /config/peer*/*.conf 2>/dev/null); then
+                        CLIENT_IP="${PROPOSED_IP}"
+                        break
+                    fi
+                done
+            fi
+            if [[ -f "/config/${PEER_ID}/presharedkey-${PEER_ID}" ]]; then
+                # create peer conf with presharedkey
+                eval "$(printf %s)
+                cat <<DUDE > /config/${PEER_ID}/${PEER_ID}.conf
+$(cat /config/templates/peer.conf)
+DUDE"
+                # Append I1-I5 signature packets to peer conf
+                append_awg_signatures "/config/${PEER_ID}/${PEER_ID}.conf"
+                # add peer info to server conf with presharedkey
+                cat <<DUDE >> /config/wg_confs/wg0.conf
+[Peer]
+# ${PEER_ID}
+PublicKey = $(cat "/config/${PEER_ID}/publickey-${PEER_ID}")
+PresharedKey = $(cat "/config/${PEER_ID}/presharedkey-${PEER_ID}")
+DUDE
+            else
+                echo "**** Existing keys with no preshared key found for ${PEER_ID}, creating confs without preshared key for backwards compatibility ****"
+                # create peer conf without presharedkey
+                eval "$(printf %s)
+                cat <<DUDE > /config/${PEER_ID}/${PEER_ID}.conf
+$(sed '/PresharedKey/d' "/config/templates/peer.conf")
+DUDE"
+                # Append I1-I5 signature packets to peer conf
+                append_awg_signatures "/config/${PEER_ID}/${PEER_ID}.conf"
+                # add peer info to server conf without presharedkey
+                cat <<DUDE >> /config/wg_confs/wg0.conf
+[Peer]
+# ${PEER_ID}
+PublicKey = $(cat "/config/${PEER_ID}/publickey-${PEER_ID}")
+DUDE
+            fi
+            SERVER_ALLOWEDIPS=SERVER_ALLOWEDIPS_PEER_${i}
+            # add peer's allowedips to server conf
+            if [[ -n "${!SERVER_ALLOWEDIPS}" ]]; then
+                echo "Adding ${!SERVER_ALLOWEDIPS} to wg0.conf's AllowedIPs for peer ${i}"
+                cat <<DUDE >> /config/wg_confs/wg0.conf
+AllowedIPs = ${CLIENT_IP}/32,${!SERVER_ALLOWEDIPS}
+DUDE
+            else
+                cat <<DUDE >> /config/wg_confs/wg0.conf
+AllowedIPs = ${CLIENT_IP}/32
+DUDE
+            fi
+            # add PersistentKeepalive if the peer is specified
+            if [[ -n "${PERSISTENTKEEPALIVE_PEERS_ARRAY}" ]] && ([[ "${PERSISTENTKEEPALIVE_PEERS_ARRAY[0]}" = "all" ]] || printf '%s\0' "${PERSISTENTKEEPALIVE_PEERS_ARRAY[@]}" | grep -Fxqz -- "${i}"); then
+                cat <<DUDE >> /config/wg_confs/wg0.conf
+PersistentKeepalive = 25
+
+DUDE
+            else
+                cat <<DUDE >> /config/wg_confs/wg0.conf
+
+DUDE
+            fi
+            if [[ -z "${LOG_CONFS}" ]] || [[ "${LOG_CONFS}" = "true" ]]; then
+                echo "PEER ${i} QR code (conf file is saved under /config/${PEER_ID}):"
+                qrencode -t ansiutf8 < "/config/${PEER_ID}/${PEER_ID}.conf"
+            else
+                echo "PEER ${i} conf and QR code png saved in /config/${PEER_ID}"
+            fi
+            qrencode -o "/config/${PEER_ID}/${PEER_ID}.png" < "/config/${PEER_ID}/${PEER_ID}.conf"
+        fi
+    done
+}
+
+save_vars () {
+    cat <<DUDE > /config/.donoteditthisfile
+ORIG_SERVERURL="$SERVERURL"
+ORIG_SERVERPORT="$SERVERPORT"
+ORIG_PEERDNS="$PEERDNS"
+ORIG_PEERS="$PEERS"
+ORIG_INTERFACE="$INTERFACE"
+ORIG_ALLOWEDIPS="$ALLOWEDIPS"
+ORIG_PERSISTENTKEEPALIVE_PEERS="$PERSISTENTKEEPALIVE_PEERS"
+ORIG_AWG_VERSION="$AWG_VERSION"
+ORIG_AWG_JC="$AWG_JC"
+ORIG_AWG_JMIN="$AWG_JMIN"
+ORIG_AWG_JMAX="$AWG_JMAX"
+ORIG_AWG_S1="$AWG_S1"
+ORIG_AWG_S2="$AWG_S2"
+ORIG_AWG_S3="$AWG_S3"
+ORIG_AWG_S4="$AWG_S4"
+ORIG_AWG_H1="$AWG_H1"
+ORIG_AWG_H2="$AWG_H2"
+ORIG_AWG_H3="$AWG_H3"
+ORIG_AWG_H4="$AWG_H4"
+ORIG_AWG_I1="$AWG_I1"
+ORIG_AWG_I2="$AWG_I2"
+ORIG_AWG_I3="$AWG_I3"
+ORIG_AWG_I4="$AWG_I4"
+ORIG_AWG_I5="$AWG_I5"
+DUDE
+}
+
+if [[ -n "$PEERS" ]]; then
+    echo "**** Server mode is selected ****"
+    if [[ "$PEERS" =~ ^[0-9]+$ ]] && ! [[ "$PEERS" = *,* ]]; then
+        mapfile -t PEERS_ARRAY < <(seq 1 "${PEERS}")
+    else
+        mapfile -t PEERS_ARRAY < <(echo "${PEERS}" | tr ',' '\n')
+    fi
+    if [[ ${#PEERS_ARRAY[@]} -gt 253 ]]; then
+        echo "**** ERROR: Too many peers (${#PEERS_ARRAY[@]}). Maximum is 253 for a /24 subnet ****"
+        sleep infinity
+    fi
+    if [[ -n "${PERSISTENTKEEPALIVE_PEERS}" ]]; then
+        echo "**** PersistentKeepalive will be set for: ${PERSISTENTKEEPALIVE_PEERS/,/ } ****"
+        mapfile -t PERSISTENTKEEPALIVE_PEERS_ARRAY < <(echo "${PERSISTENTKEEPALIVE_PEERS}" | tr ',' '\n')
+    fi
+    if [[ -z "$SERVERURL" ]] || [[ "$SERVERURL" = "auto" ]]; then
+        SERVERURL=$(curl -s icanhazip.com)
+        echo "**** SERVERURL var is either not set or is set to \"auto\", setting external IP to auto detected value of $SERVERURL ****"
+    else
+        echo "**** External server address is set to $SERVERURL ****"
+    fi
+    SERVERPORT=${SERVERPORT:-51820}
+    echo "**** External server port is set to ${SERVERPORT}. Make sure that port is properly forwarded to port 51820 inside this container ****"
+    INTERNAL_SUBNET=${INTERNAL_SUBNET:-10.13.13.0}
+    echo "**** Internal subnet is set to $INTERNAL_SUBNET ****"
+    INTERFACE=$(echo "$INTERNAL_SUBNET" | awk 'BEGIN{FS=OFS="."} NF--')
+    ALLOWEDIPS=${ALLOWEDIPS:-0.0.0.0/0, ::/0}
+    echo "**** AllowedIPs for peers $ALLOWEDIPS ****"
+    if [[ -z "$PEERDNS" ]] || [[ "$PEERDNS" = "auto" ]]; then
+        PEERDNS="${INTERFACE}.1"
+        echo "**** PEERDNS var is either not set or is set to \"auto\", setting peer DNS to ${INTERFACE}.1 to use the container host's DNS. ****"
+    else
+        echo "**** Peer DNS servers will be set to $PEERDNS ****"
+    fi
+
+    # Load saved AWG params as fallback, then generate/validate
+    load_awg_params
+    generate_awg_params
+
+    if [[ ! -f /config/wg_confs/wg0.conf ]]; then
+        echo "**** No wg0.conf found (maybe an initial install), generating 1 server and ${PEERS} peer/client confs ****"
+        generate_confs
+        save_vars
+    else
+        echo "**** Server mode is selected ****"
+        if [[ -f /config/.donoteditthisfile ]]; then
+            . /config/.donoteditthisfile
+        fi
+        if [[ "$SERVERURL" != "$ORIG_SERVERURL" ]] || \
+           [[ "$SERVERPORT" != "$ORIG_SERVERPORT" ]] || \
+           [[ "$PEERDNS" != "$ORIG_PEERDNS" ]] || \
+           [[ "$PEERS" != "$ORIG_PEERS" ]] || \
+           [[ "$INTERFACE" != "$ORIG_INTERFACE" ]] || \
+           [[ "$ALLOWEDIPS" != "$ORIG_ALLOWEDIPS" ]] || \
+           [[ "$PERSISTENTKEEPALIVE_PEERS" != "$ORIG_PERSISTENTKEEPALIVE_PEERS" ]] || \
+           [[ "$AWG_VERSION" != "$ORIG_AWG_VERSION" ]] || \
+           [[ "$AWG_JC" != "$ORIG_AWG_JC" ]] || \
+           [[ "$AWG_JMIN" != "$ORIG_AWG_JMIN" ]] || \
+           [[ "$AWG_JMAX" != "$ORIG_AWG_JMAX" ]] || \
+           [[ "$AWG_S1" != "$ORIG_AWG_S1" ]] || \
+           [[ "$AWG_S2" != "$ORIG_AWG_S2" ]] || \
+           [[ "$AWG_S3" != "$ORIG_AWG_S3" ]] || \
+           [[ "$AWG_S4" != "$ORIG_AWG_S4" ]] || \
+           [[ "$AWG_H1" != "$ORIG_AWG_H1" ]] || \
+           [[ "$AWG_H2" != "$ORIG_AWG_H2" ]] || \
+           [[ "$AWG_H3" != "$ORIG_AWG_H3" ]] || \
+           [[ "$AWG_H4" != "$ORIG_AWG_H4" ]] || \
+           [[ "$AWG_I1" != "$ORIG_AWG_I1" ]] || \
+           [[ "$AWG_I2" != "$ORIG_AWG_I2" ]] || \
+           [[ "$AWG_I3" != "$ORIG_AWG_I3" ]] || \
+           [[ "$AWG_I4" != "$ORIG_AWG_I4" ]] || \
+           [[ "$AWG_I5" != "$ORIG_AWG_I5" ]]; then
+            echo "**** Server related environment variables changed, regenerating 1 server and ${PEERS} peer/client confs ****"
+            generate_confs
+            save_vars
+        else
+            echo "**** No changes to parameters. Existing configs are used. ****"
+        fi
+    fi
+else
+    echo "**** Client mode selected. ****"
+    USE_COREDNS="${USE_COREDNS,,}"
+    printf %s "${USE_COREDNS:-false}" > /run/s6-overlay/container_environment/USE_COREDNS
+fi
+
+# set up CoreDNS
+if [[ ! -f /config/coredns/Corefile ]]; then
+    cp /defaults/Corefile /config/coredns/Corefile
+fi
+
+# let openresolv take control of resolv.conf
+resolvconf -a control 2>/dev/null < /etc/resolv.conf
+resolvconf -u
+
+# permissions
+lsiown -R abc:abc \
+    /config

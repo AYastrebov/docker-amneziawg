@@ -1,0 +1,132 @@
+name: Check Upstream Releases
+
+# Check for new amneziawg-tools and amneziawg-go releases daily.
+# If a new version is found, update the pinned versions in the Dockerfile
+# and trigger a rebuild.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  TOOLS_REPO: amnezia-vpn/amneziawg-tools
+  GO_REPO: amnezia-vpn/amneziawg-go
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      tools_changed: ${{ steps.compare.outputs.tools_changed }}
+      go_changed: ${{ steps.compare.outputs.go_changed }}
+      new_tools_version: ${{ steps.upstream.outputs.tools_version }}
+      new_go_version: ${{ steps.upstream.outputs.go_version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get latest upstream versions
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "## Upstream version check" >> "$GITHUB_STEP_SUMMARY"
+
+          # Get latest amneziawg-tools release
+          TOOLS_VERSION=$(gh release list --repo "$TOOLS_REPO" --limit 1 --json tagName --jq '.[0].tagName')
+          echo "Latest amneziawg-tools: ${TOOLS_VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "tools_version=${TOOLS_VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Get latest amneziawg-go tag (no releases, uses tags)
+          GO_VERSION=$(gh api "repos/${GO_REPO}/tags" --jq '.[0].name')
+          echo "Latest amneziawg-go: ${GO_VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "go_version=${GO_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Compare with current pinned versions
+        id: compare
+        run: |
+          # Extract current pinned versions from Dockerfile
+          CURRENT_TOOLS=$(grep "^ARG AMNEZIAWG_TOOLS_VERSION=" Dockerfile | cut -d= -f2)
+          CURRENT_GO=$(grep "^ARG AMNEZIAWG_GO_VERSION=" Dockerfile | cut -d= -f2)
+
+          echo "Current amneziawg-tools: ${CURRENT_TOOLS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Current amneziawg-go: ${CURRENT_GO}" >> "$GITHUB_STEP_SUMMARY"
+
+          TOOLS_CHANGED="false"
+          GO_CHANGED="false"
+
+          if [[ "${CURRENT_TOOLS}" != "${{ steps.upstream.outputs.tools_version }}" ]]; then
+            echo "**amneziawg-tools update available: ${CURRENT_TOOLS} -> ${{ steps.upstream.outputs.tools_version }}**" >> "$GITHUB_STEP_SUMMARY"
+            TOOLS_CHANGED="true"
+          fi
+
+          if [[ "${CURRENT_GO}" != "${{ steps.upstream.outputs.go_version }}" ]]; then
+            echo "**amneziawg-go update available: ${CURRENT_GO} -> ${{ steps.upstream.outputs.go_version }}**" >> "$GITHUB_STEP_SUMMARY"
+            GO_CHANGED="true"
+          fi
+
+          if [[ "${TOOLS_CHANGED}" == "false" ]] && [[ "${GO_CHANGED}" == "false" ]]; then
+            echo "No upstream changes detected." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "tools_changed=${TOOLS_CHANGED}" >> "$GITHUB_OUTPUT"
+          echo "go_changed=${GO_CHANGED}" >> "$GITHUB_OUTPUT"
+
+  update-and-build:
+    needs: check-upstream
+    if: needs.check-upstream.outputs.tools_changed == 'true' || needs.check-upstream.outputs.go_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update Dockerfile version pins
+        run: |
+          if [[ "${{ needs.check-upstream.outputs.tools_changed }}" == "true" ]]; then
+            sed -i "s/^ARG AMNEZIAWG_TOOLS_VERSION=.*/ARG AMNEZIAWG_TOOLS_VERSION=${{ needs.check-upstream.outputs.new_tools_version }}/" Dockerfile
+            echo "Updated AMNEZIAWG_TOOLS_VERSION to ${{ needs.check-upstream.outputs.new_tools_version }}"
+          fi
+
+          if [[ "${{ needs.check-upstream.outputs.go_changed }}" == "true" ]]; then
+            sed -i "s/^ARG AMNEZIAWG_GO_VERSION=.*/ARG AMNEZIAWG_GO_VERSION=${{ needs.check-upstream.outputs.new_go_version }}/" Dockerfile
+            echo "Updated AMNEZIAWG_GO_VERSION to ${{ needs.check-upstream.outputs.new_go_version }}"
+          fi
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          TOOLS_VER="${{ needs.check-upstream.outputs.new_tools_version }}"
+          GO_VER="${{ needs.check-upstream.outputs.new_go_version }}"
+
+          COMMIT_MSG="chore: bump upstream versions"
+          BODY=""
+          if [[ "${{ needs.check-upstream.outputs.tools_changed }}" == "true" ]]; then
+            BODY="${BODY}\n- amneziawg-tools: ${TOOLS_VER}"
+          fi
+          if [[ "${{ needs.check-upstream.outputs.go_changed }}" == "true" ]]; then
+            BODY="${BODY}\n- amneziawg-go: ${GO_VER}"
+          fi
+
+          git add Dockerfile
+          git commit -m "${COMMIT_MSG}" -m "$(echo -e ${BODY})"
+          git push
+
+      - name: Trigger build workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run docker-build.yml \
+            -f amneziawg_go_version=${{ needs.check-upstream.outputs.new_go_version }} \
+            -f amneziawg_tools_version=${{ needs.check-upstream.outputs.new_tools_version }}
+          echo "Triggered build with updated versions" >> "$GITHUB_STEP_SUMMARY"

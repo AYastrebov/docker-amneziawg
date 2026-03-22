@@ -1,57 +1,107 @@
-# Dockerfile for amneziawg-go and amneziawg-tools
+# syntax=docker/dockerfile:1
 
-# ---- Builder Stage ----
-# This stage compiles a static amneziawg-go binary.
-FROM golang:1.24.4-alpine AS builder
+# Dockerfile for AmneziaWG with LinuxServer.io architecture
+# Multi-stage build: compile amneziawg-go, awg-tools, then create runtime image
 
-# Install build dependencies for cgo (build-base) and git
+# Upstream version defaults — override via --build-arg or CI
+ARG AMNEZIAWG_GO_VERSION=v0.2.16
+ARG AMNEZIAWG_TOOLS_VERSION=v1.0.20260223
+
+# ============================================================================
+# Stage 1: Compile amneziawg-go
+# ============================================================================
+FROM golang:1.24.4-alpine AS go-builder
+
+ARG AMNEZIAWG_GO_VERSION
 RUN apk add --no-cache git build-base
 
-# Clone the amneziawg-go repository
 WORKDIR /src
-RUN git clone https://github.com/amnezia-vpn/amneziawg-go.git .
-
-# Build a static binary, enabling cgo for static linking.
+RUN git clone --branch ${AMNEZIAWG_GO_VERSION} --depth 1 https://github.com/amnezia-vpn/amneziawg-go.git .
 RUN CGO_ENABLED=1 go build -ldflags '-linkmode external -extldflags "-fno-PIC -static"' -v -o amneziawg-go
 
-# ---- Runtime Stage ----
-# This stage creates the final image using pre-compiled tools.
-# Using alpine:3.19 to match the pre-compiled tools version.
-FROM alpine:3.19
+# ============================================================================
+# Stage 2: Compile awg-tools from source
+# ============================================================================
+FROM alpine:3.21 AS tools-builder
 
-# Define the release version of amneziawg-tools to download
-ARG AWGTOOLS_RELEASE="1.0.20250903"
+ARG AMNEZIAWG_TOOLS_VERSION
+RUN apk add --no-cache git build-base linux-headers bash
 
-# Install runtime dependencies and tools for downloading
-RUN apk --no-cache add iproute2 iptables bash wget unzip openresolv
+WORKDIR /src
+RUN git clone --branch ${AMNEZIAWG_TOOLS_VERSION} --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git .
+WORKDIR /src/src
+# Build awg binary and install awg-quick script
+RUN make && \
+    make install DESTDIR=/tools-install && \
+    mkdir -p /tools-install/usr/bin && \
+    cp /src/src/wg-quick/linux.bash /tools-install/usr/bin/awg-quick && \
+    chmod +x /tools-install/usr/bin/awg-quick
 
-# Download and install pre-compiled amneziawg-tools
-RUN cd /usr/bin/ && \
-    wget https://github.com/amnezia-vpn/amneziawg-tools/releases/download/v${AWGTOOLS_RELEASE}/alpine-3.19-amneziawg-tools.zip && \
-    unzip -j alpine-3.19-amneziawg-tools.zip && \
-    rm alpine-3.19-amneziawg-tools.zip && \
-    chmod +x /usr/bin/awg /usr/bin/awg-quick && \
-    # Add symbolic links for compatibility with standard wg commands
-    ln -s /usr/bin/awg /usr/bin/wg && \
-    ln -s /usr/bin/awg-quick /usr/bin/wg-quick && \
-    sed -i 's|\[\[ $proto == -4 \]\] && cmd sysctl -q net\.ipv4\.conf\.all\.src_valid_mark=1|[[ $proto == -4 ]] \&\& [[ $(sysctl -n net.ipv4.conf.all.src_valid_mark) != 1 ]] \&\& cmd sysctl -q net.ipv4.conf.all.src_valid_mark=1|' /usr/bin/awg-quick
+# ============================================================================
+# Stage 3: Runtime image using LinuxServer base
+# ============================================================================
+FROM ghcr.io/linuxserver/baseimage-alpine:3.21
 
-# Copy the compiled amneziawg-go binary from the builder stage
-COPY --from=builder /src/amneziawg-go /usr/bin/
+# set version label
+ARG BUILD_DATE
+ARG VERSION
+ARG AMNEZIAWG_GO_VERSION
+ARG AMNEZIAWG_TOOLS_VERSION
+LABEL build_version="AmneziaWG version:- ${VERSION} Build-date:- ${BUILD_DATE}"
+LABEL maintainer="AYastrebov"
+LABEL org.opencontainers.image.source="https://github.com/AYastrebov/docker-amneziawg"
+LABEL org.opencontainers.image.description="AmneziaWG VPN container (amneziawg-tools ${AMNEZIAWG_TOOLS_VERSION}, amneziawg-go ${AMNEZIAWG_GO_VERSION})"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.version="${AMNEZIAWG_TOOLS_VERSION}"
 
-# Create a directory for WireGuard configurations
-RUN mkdir -p /etc/wireguard
+ENV LSIO_FIRST_PARTY="false"
 
-# Copy the entrypoint script
-COPY entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint.sh
+RUN \
+  echo "**** install dependencies ****" && \
+  apk add --no-cache \
+    bc \
+    coredns \
+    grep \
+    iproute2 \
+    iptables \
+    ip6tables \
+    iputils \
+    kmod \
+    libcap-utils \
+    libqrencode-tools \
+    net-tools \
+    nftables \
+    openresolv && \
+  echo "wireguard" >> /etc/modules && \
+  echo "**** cleanup ****" && \
+  rm -rf \
+    /tmp/*
 
-# Set the entrypoint
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+# Copy compiled binaries from builder stages
+COPY --from=go-builder /src/amneziawg-go /usr/bin/
+COPY --from=tools-builder /tools-install/usr/bin/awg /usr/bin/
+COPY --from=tools-builder /tools-install/usr/bin/awg-quick /usr/bin/
 
-# Add health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD awg show || exit 1
+# Create symlinks for WireGuard compatibility
+RUN \
+  ln -sf /usr/bin/awg /usr/bin/wg && \
+  ln -sf /usr/bin/awg-quick /usr/bin/wg-quick && \
+  chmod +x /usr/bin/awg /usr/bin/awg-quick /usr/bin/amneziawg-go
 
-# The default command is to show usage, but you'll override this
-CMD ["--help"]
+# Apply awg-quick sysctl patch to avoid errors when sysctl is already set
+RUN sed -i 's|\[\[ $proto == -4 \]\] && cmd sysctl -q net\.ipv4\.conf\.all\.src_valid_mark=1|[[ $proto == -4 ]] \&\& [[ $(sysctl -n net.ipv4.conf.all.src_valid_mark) != 1 ]] \&\& cmd sysctl -q net.ipv4.conf.all.src_valid_mark=1|' /usr/bin/awg-quick
+
+# Create symlink for /etc/wireguard -> /config/wg_confs
+RUN \
+  rm -rf /etc/wireguard && \
+  ln -s /config/wg_confs /etc/wireguard
+
+# write build version info
+RUN \
+  printf "AmneziaWG version: ${VERSION}\nBuild-date: ${BUILD_DATE}\namneziawg-tools: ${AMNEZIAWG_TOOLS_VERSION}\namneziawg-go: ${AMNEZIAWG_GO_VERSION}\n" > /build_version
+
+# add local files
+COPY /root /
+
+# ports and volumes
+EXPOSE 51820/udp

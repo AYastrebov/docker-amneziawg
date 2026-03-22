@@ -1,5 +1,5 @@
 # AmneziaWG Configuration Example
-# Copy this file to awg0.conf and customize for your setup
+# Copy this file to ./config/wg_confs/wg0.conf and customize for your setup
 
 [Interface]
 # Replace with your actual private key
@@ -9,28 +9,42 @@ Address = 10.0.0.1/24
 # Port to listen on (server) or connect to (client)
 ListenPort = 51820
 
-# AmneziaWG specific obfuscation parameters
-# These parameters help bypass DPI and censorship
-# Jitter parameters
-Jc = 4          # Jitter count
-Jmin = 50       # Minimum jitter value (ms)
-Jmax = 1000     # Maximum jitter value (ms)
+# AmneziaWG obfuscation parameters
+# All values must match between server and clients (except Jc, Jmin, Jmax)
 
-# Packet size obfuscation
-S1 = 86         # Packet size parameter 1
-S2 = 12         # Packet size parameter 2
+# Junk packets - random data sent before handshakes to confuse traffic analysis
+Jc = 4          # Number of junk packets (1-128)
+Jmin = 50       # Minimum junk packet size in bytes
+Jmax = 1000     # Maximum junk packet size in bytes (max 1280)
 
-# Header obfuscation
-H1 = 1755269708  # Header parameter 1
-H2 = 2101520157  # Header parameter 2
-H3 = 1829552136  # Header parameter 3
-H4 = 2016351429  # Header parameter 4
+# Packet padding - adds bytes to obscure message sizes
+S1 = 86         # Handshake initiation padding (max 1132)
+S2 = 12         # Handshake response padding (max 1188)
+S3 = 0          # Cookie reply padding (AWG 2.0)
+S4 = 0          # Transport data padding (AWG 2.0)
 
-# Server configuration example - uncomment for server setup
+# Header obfuscation - replaces standard WireGuard type field values
+# Must be unique, range: 5-2147483647. Supports range format: H1 = 100-999
+H1 = 1755269708  # Handshake initiation (replaces WG value 1)
+H2 = 2101520157  # Handshake response (replaces WG value 2)
+H3 = 1829552136  # Cookie reply (replaces WG value 3)
+H4 = 2016351429  # Transport data (replaces WG value 4)
+
+# AWG 2.0 Custom Protocol Signature packets (optional)
+# Uncomment to send signature packets that mimic other UDP protocols
+# Tags: <b 0xHEX> static bytes, <r N> random bytes, <rd N> random digits,
+#        <rc N> random chars, <t> timestamp
+# I1 = <b 0x160301><r 2><b 0x0100><r 32><t>
+# I2 =
+# I3 =
+# I4 =
+# I5 =
+
+# Server configuration - uncomment for server setup
 # PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
 # PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
 
-# Client configuration example - uncomment for client setup
+# Client configuration - uncomment for client setup
 # DNS = 8.8.8.8, 8.8.4.4
 
 [Peer]

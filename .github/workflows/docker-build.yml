@@ -1,15 +1,32 @@
-name: Build and Upload Docker Image
+name: Build and Push Docker Image
 
 on:
   workflow_dispatch:
+    inputs:
+      amneziawg_go_version:
+        description: 'amneziawg-go version (e.g., v0.2.16)'
+        required: false
+      amneziawg_tools_version:
+        description: 'amneziawg-tools version (e.g., v1.0.20260223)'
+        required: false
   push:
+    branches:
+      - master
+      - main
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - master
+      - main
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   DOCKER_BUILDKIT: 1
+  # Default upstream versions — overridden by workflow_dispatch inputs or external trigger
+  AMNEZIAWG_GO_VERSION: v0.2.16
+  AMNEZIAWG_TOOLS_VERSION: v1.0.20260223
 
 jobs:
   build:
@@ -22,18 +39,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Log in to the Container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+      - name: Resolve upstream versions
+        id: versions
+        run: |
+          # Use workflow_dispatch inputs if provided, otherwise env defaults
+          AWG_GO="${{ github.event.inputs.amneziawg_go_version || env.AMNEZIAWG_GO_VERSION }}"
+          AWG_TOOLS="${{ github.event.inputs.amneziawg_tools_version || env.AMNEZIAWG_TOOLS_VERSION }}"
+          echo "amneziawg_go=${AWG_GO}" >> "$GITHUB_OUTPUT"
+          echo "amneziawg_tools=${AWG_TOOLS}" >> "$GITHUB_OUTPUT"
+          # Strip 'v' prefix for version label (v1.0.20260223 -> 1.0.20260223)
+          echo "tools_version=${AWG_TOOLS#v}" >> "$GITHUB_OUTPUT"
+          echo "## Build versions" >> "$GITHUB_STEP_SUMMARY"
+          echo "- amneziawg-go: \`${AWG_GO}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- amneziawg-tools: \`${AWG_TOOLS}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -46,18 +64,118 @@ jobs:
             [worker.oci]
               max-parallelism = 2
 
+      - name: Log in to the Container registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # Set latest tag for default branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            # Tag with upstream amneziawg-tools version (e.g., 1.0.20260223)
+            type=raw,value=${{ steps.versions.outputs.tools_version }},enable={{is_default_branch}}
+            # Tag with branch name
+            type=ref,event=branch
+            # Tag with PR number
+            type=ref,event=pr
+            # Tag with git tag (v1.0.0 -> 1.0.0)
+            type=semver,pattern={{version}}
+            # Tag with major.minor (v1.0.0 -> 1.0)
+            type=semver,pattern={{major}}.{{minor}}
+            # Tag with major (v1.0.0 -> 1)
+            type=semver,pattern={{major}}
+            # Tag with short sha
+            type=sha,prefix=sha-
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ github.workflow }}
           cache-to: type=gha,mode=max,scope=${{ github.workflow }}
           build-args: |
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+            VERSION=${{ steps.versions.outputs.tools_version }}
+            AMNEZIAWG_GO_VERSION=${{ steps.versions.outputs.amneziawg_go }}
+            AMNEZIAWG_TOOLS_VERSION=${{ steps.versions.outputs.amneziawg_tools }}
             BUILDKIT_INLINE_CACHE=1
-          outputs: type=registry
           provenance: false
           sbom: false
+
+      - name: Test image (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          # Build for local testing (single platform)
+          docker buildx build --platform linux/amd64 --load -t test-image \
+            --build-arg AMNEZIAWG_GO_VERSION=${{ steps.versions.outputs.amneziawg_go }} \
+            --build-arg AMNEZIAWG_TOOLS_VERSION=${{ steps.versions.outputs.amneziawg_tools }} \
+            .
+
+          echo "## Smoke tests" >> "$GITHUB_STEP_SUMMARY"
+
+          # Check binaries exist
+          echo "### Binary check" >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm test-image ls -la /usr/bin/awg /usr/bin/awg-quick /usr/bin/amneziawg-go /usr/bin/wg /usr/bin/wg-quick
+          echo "- Binaries present" >> "$GITHUB_STEP_SUMMARY"
+
+          # Check s6-overlay structure (all 4 services + branding)
+          echo "### s6-overlay structure" >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm test-image sh -c '
+            test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-module/type && echo "init-amneziawg-module: OK"
+            test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/type && echo "init-amneziawg-confs: OK"
+            test -f /etc/s6-overlay/s6-rc.d/svc-coredns/type && echo "svc-coredns: OK"
+            test -f /etc/s6-overlay/s6-rc.d/svc-amneziawg/type && echo "svc-amneziawg: OK"
+            test -f /etc/s6-overlay/s6-rc.d/init-adduser/branding && echo "branding: OK"
+          '
+          echo "- All services registered" >> "$GITHUB_STEP_SUMMARY"
+
+          # Verify service types
+          echo "### Service types" >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm test-image sh -c '
+            echo "init-amneziawg-module: $(cat /etc/s6-overlay/s6-rc.d/init-amneziawg-module/type)"
+            echo "init-amneziawg-confs: $(cat /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/type)"
+            echo "svc-coredns: $(cat /etc/s6-overlay/s6-rc.d/svc-coredns/type)"
+            echo "svc-amneziawg: $(cat /etc/s6-overlay/s6-rc.d/svc-amneziawg/type)"
+          '
+          echo "- Service types verified" >> "$GITHUB_STEP_SUMMARY"
+
+          # Check dependencies
+          echo "### Dependency chain" >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm test-image sh -c '
+            test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-module/dependencies.d/init-config && echo "module depends on init-config: OK"
+            test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/dependencies.d/init-amneziawg-module && echo "confs depends on module: OK"
+            test -f /etc/s6-overlay/s6-rc.d/svc-coredns/dependencies.d/init-services && echo "coredns depends on init-services: OK"
+            test -f /etc/s6-overlay/s6-rc.d/svc-amneziawg/dependencies.d/svc-coredns && echo "amneziawg depends on coredns: OK"
+          '
+          echo "- Dependency chain correct" >> "$GITHUB_STEP_SUMMARY"
+
+          # Check show-peer script and defaults
+          echo "### Scripts and defaults" >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm test-image sh -c '
+            test -x /app/show-peer && echo "show-peer: executable"
+            test -f /defaults/server.conf && echo "server.conf template: present"
+            test -f /defaults/peer.conf && echo "peer.conf template: present"
+            test -f /defaults/Corefile && echo "Corefile: present"
+            test -f /build_version && cat /build_version
+          '
+          echo "- All defaults present" >> "$GITHUB_STEP_SUMMARY"
+
+          # Check CoreDNS binary
+          echo "### CoreDNS" >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm test-image which coredns
+          echo "- CoreDNS binary present" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "All smoke tests passed!" >> "$GITHUB_STEP_SUMMARY"
+          echo "Smoke tests passed!"

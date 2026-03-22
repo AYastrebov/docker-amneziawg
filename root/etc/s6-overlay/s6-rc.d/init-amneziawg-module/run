@@ -1,0 +1,24 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+
+mkdir -p /config/{templates,coredns}
+
+echo "Uname info: $(uname -a)"
+# check for wireguard/amneziawg module
+ip link del dev test 2>/dev/null
+if ip link add dev test type wireguard; then
+    echo "**** WireGuard kernel module is active ****"
+    ip link del dev test
+    if capsh --current | grep "Current:" | grep -q "cap_sys_module"; then
+        echo "**** As the wireguard module is already active you can remove the SYS_MODULE capability from your container run/compose. ****"
+        echo "****     If your host does not automatically load the iptables module, you may still need the SYS_MODULE capability.     ****"
+    fi
+elif [[ -x /usr/bin/amneziawg-go ]]; then
+    echo "**** No kernel module available, using userspace amneziawg-go ****"
+    mkdir -p /run/s6-overlay/container_environment
+    printf "amneziawg-go" > /run/s6-overlay/container_environment/WG_QUICK_USERSPACE_IMPLEMENTATION
+else
+    echo "**** The wireguard module is not active and amneziawg-go is not available. ****"
+    echo "**** If you believe that your kernel should have wireguard support already, make sure that it is activated via modprobe! ****"
+    sleep infinity
+fi

@@ -1,35 +1,128 @@
+# Docker Compose for AmneziaWG with LinuxServer.io architecture
+#
+# Server Mode (auto-generate configs):
+#   Set PEERS to enable server mode with automatic peer generation
+#
+# Client Mode (manual configs):
+#   Don't set PEERS and mount your configs to /config/wg_confs/
+
 services:
   amneziawg:
-    # Use the pre-built image from GitHub Packages
     image: ghcr.io/ayastrebov/docker-amneziawg:latest
     container_name: amneziawg
-    # If you want to build locally instead, you can uncomment the following
-    # lines and comment out the image line above.
+    # Uncomment to build locally instead of using pre-built image
     # build:
     #   context: .
     #   dockerfile: Dockerfile
-    restart: unless-stopped
-    # Grant necessary capabilities for network management
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
-    # Grant permission to modify necessary kernel parameters.
-    # This is the secure way to handle the permissions needed by wg-quick.
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      # LinuxServer standard variables
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+
+      # ---- Server Mode Configuration ----
+      # Uncomment and configure for server mode
+      # - SERVERURL=auto                    # External URL/IP (or 'auto' to detect)
+      # - SERVERPORT=51820                  # Listen port
+      # - PEERS=3                           # Number or names: 3 or laptop,phone,tablet
+      # - PEERDNS=auto                      # DNS for peers (or specific: 8.8.8.8, 8.8.4.4)
+      # - INTERNAL_SUBNET=10.13.13.0        # VPN subnet
+      # - ALLOWEDIPS=0.0.0.0/0, ::/0        # Allowed IPs for peers
+      # - PERSISTENTKEEPALIVE_PEERS=all     # Which peers get keepalive (all or comma-separated)
+      # - LOG_CONFS=true                    # Show QR codes in logs
+
+      # ---- Per-peer server AllowedIPs (site-to-site VPN) ----
+      # - SERVER_ALLOWEDIPS_PEER_laptop=192.168.1.0/24
+
+      # ---- AmneziaWG Protocol Version ----
+      # - AWG_VERSION=2.0                   # "2.0" (default) or "1.5" for legacy clients
+
+      # ---- AmneziaWG Obfuscation (optional - random if not set) ----
+      # - AWG_JC=4                          # Junk packet count (3-8 recommended)
+      # - AWG_JMIN=50                       # Min junk packet size
+      # - AWG_JMAX=1000                     # Max junk packet size
+      # - AWG_S1=86                         # Init packet padding
+      # - AWG_S2=12                         # Response packet padding
+      # - AWG_S3=50                         # Cookie message padding (AWG 2.0, random if unset)
+      # - AWG_S4=50                         # Transport packet padding (AWG 2.0, random if unset)
+      # - AWG_H1=1755269708                 # Header obfuscation
+      # - AWG_H2=2101520157                 # Header obfuscation
+      # - AWG_H3=1829552136                 # Header obfuscation
+      # - AWG_H4=2016351429                 # Header obfuscation
+
+      # ---- AWG 2.0 Signature Packets (Advanced - leave empty for standard mode) ----
+      # - AWG_I1=<b 0x170303><r 2><b 0x0100><t>  # TLS-like signature
+      # - AWG_I2=                                 # Optional second packet
+      # - AWG_I3=                                 # Optional third packet
+      # - AWG_I4=                                 # Optional fourth packet
+      # - AWG_I5=                                 # Optional fifth packet
+
+      # ---- CoreDNS ----
+      # - USE_COREDNS=true                  # Enable CoreDNS (auto in server mode)
+    volumes:
+      - ./config:/config
+    ports:
+      - 51820:51820/udp
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
       - net.ipv6.conf.all.disable_ipv6=0
-    devices:
-      - /dev/net/tun
-    volumes:
-      # Mount your local WireGuard configuration file
-      - ./awg0.conf:/etc/wireguard/awg0.conf
-    # Health check configuration
-    healthcheck:
-      test: ["CMD", "awg", "show"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    # The command to run inside the container, specifying the interface name
-    command: awg0
+    restart: unless-stopped
+
+# ============================================================================
+# Example: Server Mode with 3 peers
+# ============================================================================
+# services:
+#   amneziawg:
+#     image: ghcr.io/ayastrebov/docker-amneziawg:latest
+#     container_name: amneziawg
+#     cap_add:
+#       - NET_ADMIN
+#       - SYS_MODULE
+#     environment:
+#       - PUID=1000
+#       - PGID=1000
+#       - TZ=Etc/UTC
+#       - SERVERURL=vpn.example.com
+#       - SERVERPORT=51820
+#       - PEERS=laptop,phone,tablet
+#       - PEERDNS=auto
+#       - INTERNAL_SUBNET=10.13.13.0
+#       - ALLOWEDIPS=0.0.0.0/0, ::/0
+#       - PERSISTENTKEEPALIVE_PEERS=all
+#       - LOG_CONFS=true
+#     volumes:
+#       - ./config:/config
+#     ports:
+#       - 51820:51820/udp
+#     sysctls:
+#       - net.ipv4.ip_forward=1
+#       - net.ipv4.conf.all.src_valid_mark=1
+#     restart: unless-stopped
+
+# ============================================================================
+# Example: Client Mode with manual config
+# ============================================================================
+# services:
+#   amneziawg:
+#     image: ghcr.io/ayastrebov/docker-amneziawg:latest
+#     container_name: amneziawg
+#     cap_add:
+#       - NET_ADMIN
+#       - SYS_MODULE
+#     environment:
+#       - PUID=1000
+#       - PGID=1000
+#       - TZ=Etc/UTC
+#     volumes:
+#       - ./config:/config
+#       # Place your .conf files in ./config/wg_confs/
+#     sysctls:
+#       - net.ipv4.ip_forward=1
+#       - net.ipv4.conf.all.src_valid_mark=1
+#     restart: unless-stopped
