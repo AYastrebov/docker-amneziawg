@@ -91,10 +91,23 @@ All clients and server must use identical values. Key constraints:
 
 ## CI/CD
 
-GitHub Actions at `.github/workflows/docker-build.yml`:
-- Push to `master`/`main` → builds multi-arch (`amd64`, `arm64`) and pushes to `ghcr.io/ayastrebov/docker-amneziawg:latest`
+### Workflows
+
+**`docker-build.yml`** — main build pipeline:
+- Push to `master`/`main` → builds multi-arch (`amd64`, `arm64`) and pushes to `ghcr.io/ayastrebov/docker-amneziawg:latest` + upstream tools version tag
 - `v*` tags → semantic version tags (`1.0.0`, `1.0`, `1`)
-- PRs → build + smoke test only (no push)
+- PRs → build + comprehensive smoke tests (binaries, s6 structure, service types, dependency chain, CoreDNS, branding)
+- `workflow_dispatch` accepts `amneziawg_go_version` and `amneziawg_tools_version` overrides
+
+**`upstream-check.yml`** — daily upstream version check (06:00 UTC):
+- Compares `ARG` defaults in Dockerfile against latest amneziawg-tools and amneziawg-go releases
+- If new version detected: updates Dockerfile, commits, triggers build workflow
+
+### Versioning
+
+Container images are tagged with the upstream `amneziawg-tools` version (e.g., `1.0.20260223`). Both upstream versions are pinned as `ARG` defaults at the top of the Dockerfile:
+- `AMNEZIAWG_GO_VERSION` — amneziawg-go tag (e.g., `v0.2.16`)
+- `AMNEZIAWG_TOOLS_VERSION` — amneziawg-tools release (e.g., `v1.0.20260223`)
 
 ## Common Gotchas
 
