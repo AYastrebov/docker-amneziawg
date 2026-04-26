@@ -598,6 +598,7 @@ docker exec amneziawg /app/show-peer 1 2 3
 - [AmneziaWG Kernel Module](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module)
 - [AmneziaWG-go](https://github.com/amnezia-vpn/amneziawg-go)
 - [AmneziaWG Tools](https://github.com/amnezia-vpn/amneziawg-tools)
+- [amneziawg-installer](https://github.com/bivlked/amneziawg-installer) — kernel-native Bash installer for AmneziaWG 2.0 on Ubuntu/Debian (+ ARM prebuilts)
 - [Advanced AWG Hub Guide](ADVANCED_AWG_HUB.md) — run server + client in one container for censorship bypass proxy
 - [LinuxServer docker-wireguard](https://github.com/linuxserver/docker-wireguard) (inspiration for this project)
 - [LinuxServer Advanced WireGuard Hub](https://www.linuxserver.io/blog/advanced-wireguard-hub) (inspiration for the hub guide)
