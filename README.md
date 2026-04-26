@@ -159,12 +159,14 @@ These values modify the 4-byte type field at the start of each packet, making tr
 
 | Variable | Default | Constraints | Description |
 |----------|---------|-------------|-------------|
-| `AWG_H1` | Random | 5-2147483647, must be unique | Header value for handshake initiation |
-| `AWG_H2` | Random | 5-2147483647, must be unique | Header value for handshake response |
-| `AWG_H3` | Random | 5-2147483647, must be unique | Header value for cookie reply |
-| `AWG_H4` | Random | 5-2147483647, must be unique | Header value for transport data |
+| `AWG_H1` | Random range (AWG 2.0) / integer (1.5) | ≥ 5, must be unique | Header value for handshake initiation |
+| `AWG_H2` | Random range (AWG 2.0) / integer (1.5) | ≥ 5, must be unique | Header value for handshake response |
+| `AWG_H3` | Random range (AWG 2.0) / integer (1.5) | ≥ 5, must be unique | Header value for cookie reply |
+| `AWG_H4` | Random range (AWG 2.0) / integer (1.5) | ≥ 5, must be unique | Header value for transport data |
 
-**Note:** H1-H4 must all be different from each other. AWG 2.0 also supports range format (e.g., `AWG_H1=100-999`) for additional randomization per packet.
+**AWG 2.0:** H1-H4 are auto-generated as non-overlapping range pairs (e.g., `H1=90666522-140666522`) using a quadrant strategy. The Amnezia app uses range format to identify AWG 2.0 — single integers cause the app to report AWG 1.5 even with I1-I5 set. You can supply custom ranges via env vars (e.g., `AWG_H1=100000-50100000`).
+
+**AWG 1.5:** Single integers are used for backward compatibility.
 
 #### Signature Packets (AWG 2.0 Advanced)
 
@@ -194,10 +196,11 @@ environment:
   - AWG_S2=12
   - AWG_S3=25        # AWG 2.0 cookie padding
   - AWG_S4=15        # AWG 2.0 transport padding
-  - AWG_H1=1755269708
-  - AWG_H2=2101520157
-  - AWG_H3=1829552136
-  - AWG_H4=2016351429
+  # AWG 2.0: H1-H4 must use range format (non-overlapping quadrants)
+  - AWG_H1=142503-15687642
+  - AWG_H2=647372451-697372451
+  - AWG_H3=1173841824-1223841824
+  - AWG_H4=1687654321-1737654321
 ```
 
 ### AWG 2.0 Advanced Setup
@@ -497,6 +500,7 @@ services:
       - INTERNAL_SUBNET=10.13.13.0
       - ALLOWEDIPS=0.0.0.0/0, ::/0
       # Obfuscation - randomize these values for your setup
+      # Leave H1-H4 unset to auto-generate quadrant-based ranges (recommended)
       - AWG_JC=4
       - AWG_JMIN=50
       - AWG_JMAX=1000
@@ -504,10 +508,6 @@ services:
       - AWG_S2=89
       - AWG_S3=25
       - AWG_S4=0
-      - AWG_H1=985741236
-      - AWG_H2=1736482950
-      - AWG_H3=427819563
-      - AWG_H4=1293650847
       # AWG 2.0 - QUIC-like signature packet
       - AWG_I1=<b 0xc0000000><r 16><t>
     volumes:
@@ -542,6 +542,17 @@ services:
 - **Update regularly** - TSPU detection evolves; keep both server and client software up to date.
 
 ## Troubleshooting
+
+### Custom SERVERPORT: use `SERVERPORT:51820/udp` mapping
+
+The container always listens internally on port **51820**. When using a custom `SERVERPORT`, the Docker port mapping must forward the external port to the internal 51820:
+
+```yaml
+environment:
+  - SERVERPORT=32948
+ports:
+  - 32948:51820/udp  # external:internal — NOT 32948:32948/udp
+```
 
 ### No configuration files found
 

@@ -68,18 +68,24 @@ generate_awg_params() {
     AWG_JMAX=${AWG_JMAX:-$(shuf -i 500-1000 -n 1)}
     AWG_S1=${AWG_S1:-$(shuf -i 15-150 -n 1)}
     AWG_S2=${AWG_S2:-$(shuf -i 15-150 -n 1)}
-    AWG_H1=${AWG_H1:-$(shuf -i 5-2147483647 -n 1)}
-    AWG_H2=${AWG_H2:-$(shuf -i 5-2147483647 -n 1)}
-    AWG_H3=${AWG_H3:-$(shuf -i 5-2147483647 -n 1)}
-    AWG_H4=${AWG_H4:-$(shuf -i 5-2147483647 -n 1)}
 
     if [[ "${AWG_VERSION}" == "2.0" ]]; then
+        # AWG 2.0: H1-H4 as non-overlapping range pairs (quadrant strategy, ~50M width each).
+        # Range format (e.g. "90666522-140666522") is required for the Amnezia app to detect AWG 2.0.
+        _h1_lo=$(shuf -i 5-486870911 -n 1);          AWG_H1=${AWG_H1:-${_h1_lo}-$((_h1_lo + 50000000))}
+        _h2_lo=$(shuf -i 536870912-1023741823 -n 1);  AWG_H2=${AWG_H2:-${_h2_lo}-$((_h2_lo + 50000000))}
+        _h3_lo=$(shuf -i 1073741824-1560612735 -n 1); AWG_H3=${AWG_H3:-${_h3_lo}-$((_h3_lo + 50000000))}
+        _h4_lo=$(shuf -i 1610612736-2097483647 -n 1); AWG_H4=${AWG_H4:-${_h4_lo}-$((_h4_lo + 50000000))}
         # AWG 2.0: S3/S4 padding and I1-I5 signatures
         AWG_S3=${AWG_S3:-$(shuf -i 15-150 -n 1)}
         AWG_S4=${AWG_S4:-$(shuf -i 15-150 -n 1)}
         generate_default_signatures
     else
-        # AWG 1.5 fallback: no S3/S4 padding, no signatures
+        # AWG 1.5 fallback: single integer H values, no S3/S4 padding, no signatures
+        AWG_H1=${AWG_H1:-$(shuf -i 5-2147483647 -n 1)}
+        AWG_H2=${AWG_H2:-$(shuf -i 5-2147483647 -n 1)}
+        AWG_H3=${AWG_H3:-$(shuf -i 5-2147483647 -n 1)}
+        AWG_H4=${AWG_H4:-$(shuf -i 5-2147483647 -n 1)}
         AWG_S3=${AWG_S3:-0}
         AWG_S4=${AWG_S4:-0}
         AWG_I1=${AWG_I1:-}
@@ -164,7 +170,7 @@ load_awg_params() {
     fi
 }
 
-# Append I1-I5 to a config file if set
+# Append I1-I5 to a config file if set (used for server conf, which has no [Peer] section yet)
 append_awg_signatures() {
     local conf_file=$1
     [[ -n "$AWG_I1" ]] && echo "I1 = ${AWG_I1}" >> "$conf_file"
@@ -172,6 +178,32 @@ append_awg_signatures() {
     [[ -n "$AWG_I3" ]] && echo "I3 = ${AWG_I3}" >> "$conf_file"
     [[ -n "$AWG_I4" ]] && echo "I4 = ${AWG_I4}" >> "$conf_file"
     [[ -n "$AWG_I5" ]] && echo "I5 = ${AWG_I5}" >> "$conf_file"
+}
+
+# Insert I1-I5 into [Interface] section of a peer conf (before the [Peer] line).
+# For AWG 2.0, I2-I5 are always written (even empty) so the Amnezia app detects AWG 2.0.
+append_awg_signatures_to_interface() {
+    local conf_file=$1
+    local sig_block=""
+    [[ -n "$AWG_I1" ]] && sig_block+="I1 = ${AWG_I1}"$'\n'
+    if [[ "${AWG_VERSION}" == "2.0" ]]; then
+        sig_block+="I2 = ${AWG_I2}"$'\n'
+        sig_block+="I3 = ${AWG_I3}"$'\n'
+        sig_block+="I4 = ${AWG_I4}"$'\n'
+        sig_block+="I5 = ${AWG_I5}"$'\n'
+    else
+        [[ -n "$AWG_I2" ]] && sig_block+="I2 = ${AWG_I2}"$'\n'
+        [[ -n "$AWG_I3" ]] && sig_block+="I3 = ${AWG_I3}"$'\n'
+        [[ -n "$AWG_I4" ]] && sig_block+="I4 = ${AWG_I4}"$'\n'
+        [[ -n "$AWG_I5" ]] && sig_block+="I5 = ${AWG_I5}"$'\n'
+    fi
+    [[ -z "$sig_block" ]] && return 0
+    local tmp
+    tmp=$(awk -v block="$sig_block" '
+        /^\[Peer\]/ && !done { printf "%s", block; done=1 }
+        { print }
+    ' "$conf_file")
+    printf '%s\n' "$tmp" > "$conf_file"
 }
 
 # ============================================================================
@@ -226,8 +258,8 @@ DUDE"
                 cat <<DUDE > /config/${PEER_ID}/${PEER_ID}.conf
 $(cat /config/templates/peer.conf)
 DUDE"
-                # Append I1-I5 signature packets to peer conf
-                append_awg_signatures "/config/${PEER_ID}/${PEER_ID}.conf"
+                # Insert I1-I5 into [Interface] section of peer conf
+                append_awg_signatures_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
                 # add peer info to server conf with presharedkey
                 cat <<DUDE >> /config/wg_confs/wg0.conf
 [Peer]
@@ -242,8 +274,8 @@ DUDE
                 cat <<DUDE > /config/${PEER_ID}/${PEER_ID}.conf
 $(sed '/PresharedKey/d' "/config/templates/peer.conf")
 DUDE"
-                # Append I1-I5 signature packets to peer conf
-                append_awg_signatures "/config/${PEER_ID}/${PEER_ID}.conf"
+                # Insert I1-I5 into [Interface] section of peer conf
+                append_awg_signatures_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
                 # add peer info to server conf without presharedkey
                 cat <<DUDE >> /config/wg_confs/wg0.conf
 [Peer]
