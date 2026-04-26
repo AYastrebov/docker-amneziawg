@@ -115,6 +115,14 @@ jobs:
           provenance: false
           sbom: false
 
+      - name: Ensure package is public
+        if: github.event_name != 'pull_request'
+        run: |
+          gh api --method PATCH /user/packages/container/docker-amneziawg \
+            -f visibility=public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Test image (PR only)
         if: github.event_name == 'pull_request'
         run: |
