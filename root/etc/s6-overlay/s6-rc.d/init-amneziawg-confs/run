@@ -47,11 +47,17 @@ random_hex() {
 }
 
 # Generate default I1 signature for AWG 2.0
-# Mimics a TLS Client Hello to evade DPI
+# Uses QUIC Initial (RFC 9000) — the same default as the Amnezia app itself.
+# QUIC is UDP-native, globally neutral, and the most DPI-resistant option:
+# the 1200B minimum (RFC 9000 §14.1) matches real Chrome/Firefox traffic.
+# Each connection, <r N> tags produce fresh random bytes so every handshake
+# looks unique even though the spec string is fixed.
+# For custom protocols (DNS, DTLS, SIP, HTTP/3) use https://architect.vai-rice.space/
 generate_default_signatures() {
-    # TLS record header (0x16=handshake, 0x0301=TLS 1.0 compat) + random payload
-    AWG_I1=${AWG_I1:-"<b 0x160301><r 2><b 0x0100><r 32><b 0x00><r 1><b 0x0303><r 32><b 0x20><r 32><b 0x0002><r 2><b 0x0100>"}
-    # I2-I5 are optional, leave empty if not set
+    # QUIC Initial: Long Header 0xC3 (Initial, 4B pkt_num) | QUIC v1 | 8B random DCID
+    # no SCID | no token | length varint 0x449E (=1182) | 4B pkt_num | 1178B random payload
+    AWG_I1=${AWG_I1:-"<b 0xc3><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x449e><r 4><r 1178>"}
+    # I2-I5 are optional; leave empty unless explicitly set
     AWG_I2=${AWG_I2:-}
     AWG_I3=${AWG_I3:-}
     AWG_I4=${AWG_I4:-}

@@ -199,14 +199,32 @@ I1 = <b 0xc0><r 4><b 0x00000001><r 16><t>
 
 #### Generation (init-amneziawg-confs/run)
 
+At first startup (when `AWG_I1` is not set), `generate_default_signatures()` sets a QUIC Initial packet —
+the same default used by the Amnezia app itself. The spec is persisted like all other AWG params.
+
 ```bash
-# I1-I5: Custom Protocol Signature packets (AWG 2.0, empty by default)
-AWG_I1=${AWG_I1:-}
-AWG_I2=${AWG_I2:-}
-AWG_I3=${AWG_I3:-}
-AWG_I4=${AWG_I4:-}
-AWG_I5=${AWG_I5:-}
+# QUIC Initial (RFC 9000) ~1200B — Amnezia app default
+AWG_I1="<b 0xc3><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x449e><r 4><r 1178>"
 ```
+
+**Packet breakdown:**
+- `<b 0xc3>` — Long Header byte: Initial packet, 4-byte packet number
+- `<b 0x00000001>` — QUIC version 1 (RFC 9000)
+- `<b 0x08><r 8>` — DCID length=8, 8 random bytes (unique per connection)
+- `<b 0x00><b 0x00>` — SCID length=0, token length=0
+- `<b 0x449e>` — 2-byte QUIC length varint = 1182 (packet_number + payload)
+- `<r 4>` — random packet number
+- `<r 1178>` — random encrypted payload (AEAD ciphertext looks random)
+- **Total: 1200 bytes** — meets RFC 9000 §14.1 minimum
+
+**Why QUIC, not TLS ClientHello (0x160301)?** TLS runs over TCP. Sending a TLS record header over UDP
+is anomalous and detectable by DPI systems that validate protocol-transport pairings. QUIC is designed
+for UDP and is what Chrome/Firefox use for HTTPS — a QUIC packet on a UDP port is completely unremarkable.
+
+**For custom protocols** (DNS, DTLS, SIP, HTTP/3): use [AmneziaWG Architect](https://architect.vai-rice.space/)
+to generate a tailored I1 and set it via `AWG_I1=...` in your compose file.
+
+**Supported amneziawg-go tags**: `<b 0xHEX>`, `<r N>`, `<rc N>`, `<rd N>`, `<t>`
 
 #### Config File Output
 
@@ -221,12 +239,15 @@ I1-I5 are only written to config files when set (not empty):
 Values are saved to `/config/server/awg_params`:
 
 ```
-AWG_I1=<b 0x170303><r 2><b 0x0100><t>
+AWG_I1=<b 0xc3><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x449e><r 4><r 1178>
 AWG_I2=
 AWG_I3=
 AWG_I4=
 AWG_I5=
 ```
+
+Note: `<r N>` tags are expanded to fresh random bytes at each handshake by amneziawg-go — the spec
+string itself is static, but every connection produces a unique packet.
 
 ### Compatibility Notes
 
@@ -251,5 +272,8 @@ Ensure `JMAX` isn't too large. Very large junk packets may be dropped by some ne
 ## References
 
 - [AmneziaWG Kernel Module Configuration](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module#configuration) - Official parameter constraints
-- [amneziawg-go README](https://github.com/amnezia-vpn/amneziawg-go)
+- [amneziawg-go README](https://github.com/amnezia-vpn/amneziawg-go) — Go userspace implementation; source of truth for supported tags and validation
 - [AmneziaVPN Documentation](https://docs.amnezia.org/)
+- [AmneziaWG Architect](https://architect.vai-rice.space/) ([source](https://github.com/Vadim-Khristenko/AmneziaWG-Architect)) — GUI config generator with 9 protocol presets (QUIC, DTLS, DNS, SIP, HTTP/3…); good reference for realistic I1 packet structures
+- [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer) — Bare-metal Bash installer; reference for S3/S4/Jmin/Jmax ranges and H1-H4 generation
+- [pumbaX/awg-multi-script](https://github.com/pumbaX/awg-multi-script) — Multi-server setup script; reference for S3/S4/Jmax ranges
