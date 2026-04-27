@@ -38,8 +38,10 @@ docker-amneziawg/
 
 ### Service Dependency Chain
 ```
-init-amneziawg-module → init-amneziawg-confs → svc-amneziawg
+init-amneziawg-module → init-amneziawg-confs → svc-coredns (longrun) → svc-amneziawg (oneshot)
 ```
+
+Note: `svc-amneziawg` is a **oneshot** — tunnels stay up without a running process after startup.
 
 Define dependencies via empty files in `dependencies.d/` named after the dependency service.
 
@@ -99,27 +101,31 @@ sed -i 's|\[\[ $proto == -4 \]\] && cmd sysctl -q net\.ipv4\.conf\.all\.src_vali
 
 For detailed parameter documentation, see [references/awg-parameters.md](references/awg-parameters.md).
 
-**Quick reference:**
-| Param | Purpose | Default |
-|-------|---------|---------|
-| `AWG_JC` | Junk packet count before handshake | Random 3-8 |
-| `AWG_JMIN` | Min junk packet size | Random 40-80 |
-| `AWG_JMAX` | Max junk packet size | Random 500-1000 |
-| `AWG_S1` | Init packet padding | Random 15-150 |
-| `AWG_S2` | Response packet padding | Random 15-150 |
-| `AWG_S3` | Cookie message padding | 0 |
-| `AWG_S4` | Transport packet padding | 0 |
-| `AWG_H1-H4` | Header obfuscation (32-bit) | Random |
+**Quick reference (AWG 2.0 defaults):**
+| Param | Purpose | Default | Notes |
+|-------|---------|---------|-------|
+| `AWG_JC` | Junk packet count before handshake | Random 3-8 | |
+| `AWG_JMIN` | Min junk packet size (bytes) | Random 40-80 | |
+| `AWG_JMAX` | Max junk packet size (bytes) | Random 80-250 | ≤1280 |
+| `AWG_S1` | Init packet padding | Random 15-150 | ≤1132, S1+56≠S2 |
+| `AWG_S2` | Response packet padding | Random 15-150 | ≤1188 |
+| `AWG_S3` | Cookie message padding | Random 8-55 (2.0) / 0 (1.5) | ≤64, rare packets |
+| `AWG_S4` | Transport packet padding | Random 4-27 (2.0) / 0 (1.5) | ≤32, **per-packet overhead — keep small** |
+| `AWG_H1-H4` | Header obfuscation | Range format e.g. `90666522-140666522` (2.0) / int (1.5) | Non-overlapping quadrants |
+| `AWG_I1-I5` | CPS signature packets | Auto TLS ClientHello (2.0) / empty (1.5) | In `[Interface]` before `[Peer]` |
 
-**All clients and server must use identical values.**
+**Critical**: All clients and server must use identical S1-S4, H1-H4, I1-I5 values. Jc/Jmin/Jmax may differ.
+
+**S4 warning**: S4 adds overhead to every data packet. Values >32 will noticeably hurt throughput.
 
 ## Common Development Tasks
 
 ### Adding a New Environment Variable
-1. Add default value in `init-amneziawg-confs/run` (near top)
-2. If persisted: add to `awg_params` save block and load section
-3. Use in `generate_server_config()` and/or `generate_peer_config()`
-4. Document in `docker-compose.yml` and `README.md`
+1. Set default in `init-amneziawg-confs/run` main logic section
+2. If persistent: add to `save_vars()` (as `ORIG_X`) AND the change detection `if` block
+3. For AWG params: also add to `generate_awg_params()` save block AND `load_awg_params()` grep section
+4. For config output: add to templates in `root/defaults/` (eval+heredoc), `append_awg_signatures()` (server conf), or `append_awg_signatures_to_interface()` (peer confs — inserts before `[Peer]` via awk)
+5. Document in `docker-compose.yml` and `README.md`
 
 ### Testing Changes
 ```bash
@@ -155,6 +161,12 @@ docker rm -f awg-test
 | Service not starting | Check: executable bit, shebang, registered in `user/contents.d/` |
 | Exit code 137 | Normal - container was stopped (SIGKILL) |
 | Permission errors on /config | Use `lsiown -R abc:abc /config` |
+| I1-I5 must be in `[Interface]`, not `[Peer]` | Use `append_awg_signatures_to_interface()` (awk insertion before `[Peer]`) for peer confs |
+| `cut -d= -f2` truncates I-params with `=` | Use `cut -d= -f2-` for I1-I5 (tag syntax contains `=` signs) |
+| Loading `awg_params` with `source` | Never — it overrides Docker env vars. Use `grep`/`cut` with `${VAR:-fallback}` |
+| S4 too large (e.g. 124) | S4 pads every data packet; use 4-27. Large values kill throughput |
+| Amnezia app shows AWG 1.5 instead of 2.0 | H1-H4 must use range format (e.g. `90666522-140666522`), not single integers |
+| `SERVERPORT` mapping in Docker | Map as `SERVERPORT:51820/udp` — container always listens on 51820 internally |
 
 ## GitHub Actions Workflow
 
