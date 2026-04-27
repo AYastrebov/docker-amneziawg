@@ -140,7 +140,7 @@ Junk packets are random data sent before each handshake to confuse traffic analy
 |----------|---------|-------------|-------------|
 | `AWG_JC` | Random 3-8 | 1-128, recommended 4-12 | Number of junk packets to send before handshake initiation |
 | `AWG_JMIN` | Random 40-80 | < JMAX | Minimum junk packet size in bytes |
-| `AWG_JMAX` | Random 500-1000 | ≤ 1280 | Maximum junk packet size in bytes |
+| `AWG_JMAX` | Random 80-250 | ≤ 1280 | Maximum junk packet size in bytes |
 
 #### Packet Padding
 
@@ -150,8 +150,8 @@ Padding bytes are added to handshake and transport messages to obscure their tru
 |----------|---------|-------------|-------------|
 | `AWG_S1` | Random 15-150 | ≤ 1132, S1+56 ≠ S2 | Bytes added to handshake initiation message |
 | `AWG_S2` | Random 15-150 | ≤ 1188, S1+56 ≠ S2 | Bytes added to handshake response message |
-| `AWG_S3` | Random 15-150 (2.0) / 0 (1.5) | - | Bytes added to cookie reply message |
-| `AWG_S4` | Random 15-150 (2.0) / 0 (1.5) | - | Bytes added to transport data messages |
+| `AWG_S3` | Random 8-55 (2.0) / 0 (1.5) | ≤ 64 | Bytes added to cookie reply message |
+| `AWG_S4` | Random 4-27 (2.0) / 0 (1.5) | ≤ 32, keep small | Bytes added to transport data messages (per-packet overhead) |
 
 #### Header Obfuscation
 
@@ -191,11 +191,11 @@ environment:
   - AWG_VERSION=2.0  # Default; set to 1.5 for legacy clients
   - AWG_JC=4         # 3-8 recommended
   - AWG_JMIN=50
-  - AWG_JMAX=1000
+  - AWG_JMAX=200
   - AWG_S1=86
   - AWG_S2=12
-  - AWG_S3=25        # AWG 2.0 cookie padding
-  - AWG_S4=15        # AWG 2.0 transport padding
+  - AWG_S3=25        # AWG 2.0 cookie padding (8-55)
+  - AWG_S4=15        # AWG 2.0 transport padding (4-27, keep small)
   # AWG 2.0: H1-H4 must use range format (non-overlapping quadrants)
   - AWG_H1=142503-15687642
   - AWG_H2=647372451-697372451
@@ -303,7 +303,7 @@ DNS = 8.8.8.8
 # AmneziaWG parameters (must match server)
 Jc = 4
 Jmin = 50
-Jmax = 1000
+Jmax = 200
 S1 = 86
 S2 = 12
 S3 = 0
@@ -503,7 +503,7 @@ services:
       # Leave H1-H4 unset to auto-generate quadrant-based ranges (recommended)
       - AWG_JC=4
       - AWG_JMIN=50
-      - AWG_JMAX=1000
+      - AWG_JMAX=200
       - AWG_S1=67
       - AWG_S2=89
       - AWG_S3=25
@@ -536,7 +536,7 @@ services:
 
 - **Always randomize your own parameter values** - do not copy exact values from examples. The auto-generated random defaults in this container are a good starting point.
 - **Use AWG 2.0 with I1 signatures** when possible - it is significantly harder for TSPU to detect than AWG 1.0 junk packets alone.
-- **Keep S4 small** (0-32) - data packet padding is per-packet overhead, large values kill throughput.
+- **Keep S4 small** (4-27) - data packet padding is per-packet overhead, large values kill throughput.
 - **Consider split tunneling** (`ALLOWEDIPS=`) to route only necessary traffic through VPN, reducing the traffic profile.
 - **Have a fallback ready** - the Amnezia team recommends VLESS+Reality (XRay) as a backup protocol when AWG faces active blocking campaigns.
 - **Update regularly** - TSPU detection evolves; keep both server and client software up to date.

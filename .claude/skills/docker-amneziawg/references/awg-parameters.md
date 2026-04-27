@@ -14,7 +14,7 @@ Random data packets sent before each handshake to confuse traffic analysis.
 |-----------|------|---------|-------------|-------------|
 | `AWG_JC` | int | Random 3-8 | 1-128, recommended 4-12 | Number of junk packets per handshake |
 | `AWG_JMIN` | int | Random 40-80 | < JMAX | Minimum junk packet size in bytes |
-| `AWG_JMAX` | int | Random 500-1000 | ≤ 1280 | Maximum junk packet size in bytes |
+| `AWG_JMAX` | int | Random 80-250 | ≤ 1280 | Maximum junk packet size in bytes |
 
 **How it works**: Before initiating a handshake, the client sends `Jc` packets of random data with sizes between `Jmin` and `Jmax` bytes. This obscures the handshake pattern that DPI systems look for.
 
@@ -28,14 +28,14 @@ Adds padding bytes to different message types to obscure their true size.
 |-----------|------|---------|-------------|--------------|
 | `AWG_S1` | int | Random 15-150 | ≤ 1132 (1280-148) | Handshake initiation |
 | `AWG_S2` | int | Random 15-150 | ≤ 1188 (1280-92) | Handshake response |
-| `AWG_S3` | int | 0 | - | Cookie reply |
-| `AWG_S4` | int | 0 | - | Transport data |
+| `AWG_S3` | int | Random 8-55 (2.0) / 0 (1.5) | ≤ 64 | Cookie reply |
+| `AWG_S4` | int | Random 4-27 (2.0) / 0 (1.5) | ≤ 32 | Transport data (per-packet overhead, keep small) |
 
 **Critical constraint**: `S1 + 56 ≠ S2` (these values must not have this relationship)
 
 **How it works**: Each parameter specifies how many random padding bytes to add to that message type. This prevents DPI from identifying messages by their characteristic sizes.
 
-**Note**: S3 and S4 are typically left at 0 for most use cases. S1 and S2 provide sufficient obfuscation for handshakes.
+**Note**: S3 and S4 are AWG 2.0 extensions (set to 0 in AWG 1.5). S4 should be kept small (4-27) since it adds overhead to every data packet. S3 can be slightly larger (8-55) since cookie replies are rare.
 
 ### Header Obfuscation (H1, H2, H3, H4)
 
@@ -64,13 +64,13 @@ Modifies the 4-byte type field at the start of each packet.
 # Junk packets
 AWG_JC=${AWG_JC:-$(shuf -i 3-8 -n 1)}
 AWG_JMIN=${AWG_JMIN:-$(shuf -i 40-80 -n 1)}
-AWG_JMAX=${AWG_JMAX:-$(shuf -i 500-1000 -n 1)}
+AWG_JMAX=${AWG_JMAX:-$(shuf -i 80-250 -n 1)}
 
 # Padding
 AWG_S1=${AWG_S1:-$(shuf -i 15-150 -n 1)}
 AWG_S2=${AWG_S2:-$(shuf -i 15-150 -n 1)}
-AWG_S3=${AWG_S3:-0}
-AWG_S4=${AWG_S4:-0}
+AWG_S3=${AWG_S3:-$(shuf -i 8-55 -n 1)}   # AWG 2.0
+AWG_S4=${AWG_S4:-$(shuf -i 4-27 -n 1)}   # AWG 2.0, keep small (per-packet)
 
 # Headers (min 5 to avoid collision with standard WireGuard values 1-4)
 AWG_H1=${AWG_H1:-$(shuf -i 5-2147483647 -n 1)}
@@ -89,8 +89,8 @@ AWG_JMIN=62
 AWG_JMAX=847
 AWG_S1=98
 AWG_S2=45
-AWG_S3=0
-AWG_S4=0
+AWG_S3=25
+AWG_S4=12
 AWG_H1=1755269708
 AWG_H2=2101520157
 AWG_H3=1829552136
@@ -108,11 +108,11 @@ PrivateKey = ...
 # AmneziaWG Obfuscation Parameters
 Jc = 5
 Jmin = 62
-Jmax = 847
+Jmax = 180
 S1 = 98
 S2 = 45
-S3 = 0
-S4 = 0
+S3 = 25
+S4 = 12
 H1 = 1755269708
 H2 = 2101520157
 H3 = 1829552136
