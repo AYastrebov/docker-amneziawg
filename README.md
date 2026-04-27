@@ -184,7 +184,7 @@ See [AmneziaWG Kernel Module Configuration](https://github.com/amnezia-vpn/amnez
 
 #### Recommended Values
 
-For most DPI bypass scenarios, the auto-generated random values work well. AWG 2.0 (default) auto-generates a TLS Client Hello I1 signature and random S3/S4 padding. If you need specific values (e.g., to match an existing setup):
+For most DPI bypass scenarios, the auto-generated random values work well. AWG 2.0 (default) auto-generates a QUIC Initial I1 signature (RFC 9000, ~1200B — same default as the Amnezia app) and random S3/S4 padding. For custom I1 protocols (DNS, DTLS, SIP, HTTP/3) use [AmneziaWG Architect](https://architect.vai-rice.space/). If you need specific values (e.g., to match an existing setup):
 
 ```yaml
 environment:
@@ -599,6 +599,7 @@ docker exec amneziawg /app/show-peer 1 2 3
 - [AmneziaWG-go](https://github.com/amnezia-vpn/amneziawg-go)
 - [AmneziaWG Tools](https://github.com/amnezia-vpn/amneziawg-tools)
 - [amneziawg-installer](https://github.com/bivlked/amneziawg-installer) — kernel-native Bash installer for AmneziaWG 2.0 on Ubuntu/Debian (+ ARM prebuilts)
+- [AmneziaWG Architect](https://architect.vai-rice.space/) — GUI config generator with 9 CPS protocol presets (QUIC, DTLS, DNS, SIP, HTTP/3…) for custom I1-I5
 - [Advanced AWG Hub Guide](ADVANCED_AWG_HUB.md) — run server + client in one container for censorship bypass proxy
 - [LinuxServer docker-wireguard](https://github.com/linuxserver/docker-wireguard) (inspiration for this project)
 - [LinuxServer Advanced WireGuard Hub](https://www.linuxserver.io/blog/advanced-wireguard-hub) (inspiration for the hub guide)
