@@ -184,16 +184,9 @@ ports:
 
 ## REST API
 
-An optional REST API is available for programmatic access to peer configs, QR codes, tunnel statistics, and server info. Enable it with `USE_API=true`.
+Set `USE_API=true` to expose a REST API for reading peer configs, downloading QR codes, and watching tunnel stats. The token is auto-generated on first run and saved to `/config/server/api_token`. Swagger UI is at `/swagger/index.html`.
 
-Features:
-- Peer listing, config download, QR code retrieval
-- Live tunnel statistics (transfer, handshake, endpoint)
-- WebSocket endpoint for real-time stats (2s updates)
-- Swagger UI at `/swagger/index.html`
-- Bearer token authentication (auto-generated)
-
-See **[API.md](API.md)** for full endpoint documentation and examples.
+See [API.md](API.md) for endpoints and examples.
 
 ```yaml
 environment:

@@ -1,6 +1,6 @@
 # AmneziaWG REST API
 
-Optional REST API for monitoring and managing AmneziaWG VPN peers and tunnels. Designed for integration with web UIs, Telegram bots, and monitoring dashboards.
+REST API for reading peer configs, tunnel stats, and server info. Useful if you're building a web UI or a Telegram bot on top of the container.
 
 ## Quick Start
 
@@ -55,9 +55,9 @@ WebSocket connections authenticate via query parameter:
 ws://localhost:8081/api/v1/ws/stats?token=YOUR_TOKEN
 ```
 
-## Interactive Documentation
+## Swagger UI
 
-When the API is enabled, Swagger UI is available at:
+When the API is enabled, Swagger UI is at:
 
 ```
 http://localhost:8081/swagger/index.html
@@ -256,7 +256,7 @@ Message format matches `GET /api/v1/tunnels` with an added `timestamp` field.
 
 ## Error Responses
 
-All errors follow a consistent format:
+Error responses look like this:
 
 ```json
 {
@@ -275,7 +275,7 @@ All errors follow a consistent format:
 
 ## Security
 
-- **Private keys are never exposed** — no endpoint returns `privatekey-*` files
-- **Always use a reverse proxy with TLS** when exposing the API to the internet
-- The API binds to `0.0.0.0` — control access via Docker port mapping
-- Token is stored at `/config/server/api_token` with mode `600`
+- The server's `privatekey-server` file is never served. Peer `.conf` files (which contain the peer's `PrivateKey`) are available via `/peers/:id/config`, so treat the API token like a secret.
+- Put a reverse proxy with TLS in front if you expose this to the internet.
+- The API binds to `0.0.0.0`. Control access via Docker port mapping.
+- Token is stored at `/config/server/api_token` with mode `600`.
