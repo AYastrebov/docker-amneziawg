@@ -18,6 +18,10 @@ SECURITY.md
 .DS_Store
 .vscode/
 .idea/
+.claude/
+
+# Test files — run in CI, not needed in Docker build
+api/*_test.go
 
 # Logs
 *.log
