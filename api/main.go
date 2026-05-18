@@ -57,18 +57,29 @@ func main() {
 	v1.Use(BearerAuth(token))
 	{
 		v1.GET("/server", handleServer)
+		v1.GET("/system", handleSystem)
+		v1.GET("/version", handleVersion)
+		v1.GET("/services", handleServices)
 		v1.GET("/tunnels", handleTunnels)
+		v1.GET("/tunnels/:name", handleTunnel)
 		v1.GET("/peers", handlePeers)
 		v1.GET("/peers/:id", handlePeer)
 		v1.GET("/peers/:id/config", handlePeerConfig)
 		v1.GET("/peers/:id/qr", handlePeerQR)
+		v1.HEAD("/peers/:id/qr", handlePeerQRHead)
+		v1.GET("/logs", handleLogs)
 	}
+
+	// Log store + AWG event poller. Started before WS hubs so existing
+	// tunnels are seeded into baseline state immediately.
+	logStore = NewLogStore(5000)
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+	go runAWGEventLoop(bgCtx, logStore, 0)
 
 	// WebSocket — auth via query param
 	hub := NewHub()
-	hubCtx, hubCancel := context.WithCancel(context.Background())
-	defer hubCancel()
-	go hub.Run(hubCtx)
+	go hub.Run(bgCtx)
 
 	r.GET("/api/v1/ws/stats", func(c *gin.Context) {
 		wsToken := c.Query("token")
@@ -77,6 +88,15 @@ func main() {
 			return
 		}
 		HandleWebSocket(hub, c)
+	})
+
+	r.GET("/api/v1/ws/logs", func(c *gin.Context) {
+		wsToken := c.Query("token")
+		if wsToken == "" || !constantTimeTokenMatch(wsToken, token) {
+			c.JSON(http.StatusUnauthorized, ErrorResponse("UNAUTHORIZED", "Invalid or missing token"))
+			return
+		}
+		HandleLogsWebSocket(logStore, c)
 	})
 
 	srv := &http.Server{
@@ -98,7 +118,7 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down API server...")
-	hubCancel()
+	bgCancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {

@@ -129,3 +129,78 @@ func HandleWebSocket(hub *Hub, c *gin.Context) {
 		}
 	}
 }
+
+// wsCloseTryAgainLater is the WebSocket close code we send when a subscriber
+// can't keep up with the broadcast rate. RFC 6455 reserves 1013 for "Try
+// Again Later" — clients should reconnect with backoff.
+const wsCloseTryAgainLater = 1013
+
+// wsLogsWriteTimeout caps how long a single WS write can block before we drop
+// the connection. Keeps stuck clients from holding goroutines forever.
+const wsLogsWriteTimeout = 10 * time.Second
+
+// HandleLogsWebSocket upgrades the connection, subscribes to store, and forwards
+// matching log lines to the client until the client disconnects or falls behind.
+//
+// Filters (level, source) are parsed from query params and applied server-side
+// so chatty sources don't waste bandwidth.
+func HandleLogsWebSocket(store *LogStore, c *gin.Context) {
+	filter := LogFilter{
+		Levels:  parseCSV(c.Query("level")),
+		Sources: parseCSV(c.Query("source")),
+	}
+
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("logs WebSocket upgrade error: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	sub := store.Subscribe(128)
+	defer store.Unsubscribe(sub)
+
+	lineCh, overflowCh, doneCh := sub.Recv()
+
+	// Read pump: any read error (incl. client close) cancels the write loop.
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case line, ok := <-lineCh:
+			if !ok {
+				return
+			}
+			if !filter.Matches(line) {
+				continue
+			}
+			data, err := json.Marshal(line)
+			if err != nil {
+				continue
+			}
+			_ = conn.SetWriteDeadline(time.Now().Add(wsLogsWriteTimeout))
+			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				return
+			}
+
+		case <-overflowCh:
+			msg := websocket.FormatCloseMessage(wsCloseTryAgainLater, "client too slow")
+			_ = conn.WriteControl(websocket.CloseMessage, msg, time.Now().Add(time.Second))
+			return
+
+		case <-doneCh:
+			return
+
+		case <-readDone:
+			return
+		}
+	}
+}

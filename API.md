@@ -125,6 +125,64 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/v1/server
 }
 ```
 
+#### `GET /api/v1/system`
+
+Host runtime metrics for the panel's health badge. Lightweight — designed to be polled every 5–10 seconds.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/v1/system
+```
+
+```json
+{
+  "data": {
+    "cpu": { "load_1m": 0.42, "load_5m": 0.38, "load_15m": 0.30, "cores": 4 },
+    "memory": { "total_bytes": 2147483648, "used_bytes": 512000000, "used_percent": 23.8 },
+    "disk": { "path": "/config", "total_bytes": 21474836480, "used_bytes": 1073741824, "used_percent": 5.0 },
+    "uptime_seconds": 3601.5
+  }
+}
+```
+
+Missing `/proc` files yield zero values instead of a 500 — the panel prefers "unknown" to a broken badge.
+
+#### `GET /api/v1/version`
+
+Just the upstream component versions and build date. Cheaper than `/api/v1/server` for "is there a new image?" probes.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/v1/version
+```
+
+```json
+{
+  "data": {
+    "amneziawg_tools": "v1.0.20260223",
+    "amneziawg_go": "v0.2.18"
+  }
+}
+```
+
+#### `GET /api/v1/services`
+
+s6-overlay service runtime status. Useful for debugging ("why is DNS down?").
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/v1/services
+```
+
+```json
+{
+  "data": [
+    { "name": "svc-amneziawg", "status": "up",      "uptime_seconds": 3601 },
+    { "name": "svc-coredns",   "status": "up",      "uptime_seconds": 3600 },
+    { "name": "svc-awg-api",   "status": "up",      "uptime_seconds": 3600 }
+  ]
+}
+```
+
+`status` is `up`, `down`, or `unknown` (the latter when s6 runtime state isn't reachable — e.g. running outside the container).
+
 ### Tunnels
 
 #### `GET /api/v1/tunnels`
@@ -158,6 +216,16 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/v1/tunnels
   ]
 }
 ```
+
+#### `GET /api/v1/tunnels/:name`
+
+Live stats for a single tunnel by name. Returns 404 if the tunnel isn't active.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/v1/tunnels/wg0
+```
+
+Same shape as one entry in `GET /api/v1/tunnels`.
 
 ### Peers
 
@@ -224,7 +292,13 @@ Download the raw `.conf` file for a peer.
 curl -H "Authorization: Bearer $TOKEN" -O http://localhost:8081/api/v1/peers/1/config
 ```
 
-Returns `text/plain` with `Content-Disposition: attachment; filename="peer1.conf"`.
+Returns `text/plain` with `Content-Disposition: attachment; filename="peer1.conf"` by default.
+
+Pass `?inline=1` to omit the `Content-Disposition` header so the browser (or panel) renders the file inline instead of downloading it:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/v1/peers/1/config?inline=1
+```
 
 #### `GET /api/v1/peers/:id/qr`
 
@@ -235,6 +309,74 @@ curl -H "Authorization: Bearer $TOKEN" -o peer1.png http://localhost:8081/api/v1
 ```
 
 Returns `image/png`.
+
+#### `HEAD /api/v1/peers/:id/qr`
+
+Cheap existence probe. Returns 200 with `Content-Type: image/png` and no body when the QR exists, 404 otherwise.
+
+```bash
+curl -I -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/v1/peers/1/qr
+```
+
+### Logs
+
+The container polls `awg show` every 5 seconds and emits a structured log entry whenever a peer appears, goes away, or completes a handshake. Entries are kept in an in-memory ring buffer (5000 lines) and exposed through a REST tail and a WebSocket stream. Sensitive fields (`PrivateKey`, `PreSharedKey`, bearer tokens) are scrubbed before lines enter the buffer.
+
+#### `GET /api/v1/logs`
+
+Paginated tail. Returns lines newest-first.
+
+Query params:
+
+| Param | Default | Description |
+|---|---|---|
+| `limit` | `200` | Max lines (capped at 1000) |
+| `before` | — | Cursor: line `id` (ULID) or RFC3339 timestamp; returns lines older than this |
+| `level` | all | Comma-separated levels (`debug`, `info`, `warn`, `error`) |
+| `source` | all | Comma-separated sources (`awg`, `api`, …) |
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8081/api/v1/logs?limit=100&level=info,warn&source=awg"
+```
+
+```json
+{
+  "data": {
+    "lines": [
+      {
+        "id": "01HXYZ...",
+        "t": "2026-05-18T10:30:00.123Z",
+        "level": "info",
+        "source": "awg",
+        "msg": "peer laptop handshake completed (endpoint 1.2.3.4:51820)"
+      }
+    ],
+    "next": "01HXYW..."
+  }
+}
+```
+
+`next` is the cursor for the next (older) page. It's empty when fewer than `limit` lines were returned.
+
+#### `GET /api/v1/ws/logs?token=YOUR_TOKEN`
+
+WebSocket stream of new log lines. One JSON object per frame, same shape as REST. `level` and `source` filters work the same way and are applied server-side.
+
+```javascript
+const ws = new WebSocket(
+  'ws://localhost:8081/api/v1/ws/logs?token=YOUR_TOKEN&level=warn,error'
+)
+
+ws.onmessage = (event) => {
+  const line = JSON.parse(event.data)
+  console.log(line.t, line.level, line.source, line.msg)
+}
+```
+
+If a client falls behind the broadcast rate the server closes the socket with WebSocket close code **1013 ("Try Again Later")**. Reconnect with exponential backoff.
+
+The expected init pattern: REST-fetch the most recent ~200 lines, then open the WebSocket. New frames received during the REST call should be buffered and merged.
 
 ### WebSocket: Live Stats
 
@@ -273,9 +415,54 @@ Error responses look like this:
 | `NOT_FOUND` | 404 | Requested peer does not exist |
 | `INTERNAL_ERROR` | 500 | Server error (e.g., `awg show` failed) |
 
+For the logs WebSocket specifically, server-initiated closures use:
+
+| WS close code | Meaning |
+|---|---|
+| `1013` | "Try Again Later" — client fell behind broadcast rate; reconnect with backoff |
+
 ## Security
 
 - The server's `privatekey-server` file is never served. Peer `.conf` files (which contain the peer's `PrivateKey`) are available via `/peers/:id/config`, so treat the API token like a secret.
 - Put a reverse proxy with TLS in front if you expose this to the internet.
 - The API binds to `0.0.0.0`. Control access via Docker port mapping.
 - Token is stored at `/config/server/api_token` with mode `600`.
+
+## Deployment notes
+
+### Reverse proxy and CORS
+
+The API does not set CORS headers itself. If you serve a browser SPA (e.g. the web panel) on a different origin than the API, put a reverse proxy in front and have it add the `Access-Control-Allow-*` headers for your panel origin.
+
+Minimal nginx example:
+
+```nginx
+server {
+  listen 443 ssl http2;
+  server_name vpn-api.example.com;
+
+  # TLS bits omitted
+
+  location / {
+    proxy_pass http://127.0.0.1:8081;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+
+    # WebSocket upgrade for /api/v1/ws/*
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $http_upgrade;
+    proxy_read_timeout 1d;
+
+    # CORS for the panel origin
+    add_header Access-Control-Allow-Origin  "https://panel.example.com" always;
+    add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
+    add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+
+    if ($request_method = OPTIONS) {
+      return 204;
+    }
+  }
+}
+```
+
+Same idea works with Caddy, Traefik, or any other proxy that can add response headers.

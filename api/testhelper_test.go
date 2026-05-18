@@ -31,12 +31,24 @@ func setupTestRouter(t *testing.T) *gin.Engine {
 	v1.Use(BearerAuth(testToken))
 	{
 		v1.GET("/server", handleServer)
+		v1.GET("/system", handleSystem)
+		v1.GET("/version", handleVersion)
+		v1.GET("/services", handleServices)
 		v1.GET("/tunnels", handleTunnels)
+		v1.GET("/tunnels/:name", handleTunnel)
 		v1.GET("/peers", handlePeers)
 		v1.GET("/peers/:id", handlePeer)
 		v1.GET("/peers/:id/config", handlePeerConfig)
 		v1.GET("/peers/:id/qr", handlePeerQR)
+		v1.HEAD("/peers/:id/qr", handlePeerQRHead)
+		v1.GET("/logs", handleLogs)
 	}
+
+	// Fresh log store for each test, restored on cleanup so tests that
+	// don't use logs don't observe a populated buffer.
+	origLogStore := logStore
+	logStore = NewLogStore(100)
+	t.Cleanup(func() { logStore = origLogStore })
 
 	// WebSocket with auth — hub stopped via context on test cleanup
 	hub := NewHub()
@@ -51,6 +63,15 @@ func setupTestRouter(t *testing.T) *gin.Engine {
 			return
 		}
 		HandleWebSocket(hub, c)
+	})
+
+	r.GET("/api/v1/ws/logs", func(c *gin.Context) {
+		wsToken := c.Query("token")
+		if wsToken == "" || !constantTimeTokenMatch(wsToken, testToken) {
+			c.JSON(http.StatusUnauthorized, ErrorResponse("UNAUTHORIZED", "Invalid or missing token"))
+			return
+		}
+		HandleLogsWebSocket(logStore, c)
 	})
 
 	return r
