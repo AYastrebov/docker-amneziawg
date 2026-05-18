@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -110,21 +111,63 @@ func runAWGEventLoop(ctx context.Context, store *LogStore, interval time.Duratio
 	}
 }
 
+// peerNameTTL is how long a peerNameIndex result stays warm before the
+// next call re-reads the filesystem. Peer add/remove is a rare event, so
+// 60 s is well below "annoying staleness" but eliminates 11 of every 12
+// FS reads at the default 5 s poll cadence.
+const peerNameTTL = 60 * time.Second
+
+var (
+	peerNameMu     sync.RWMutex
+	peerNameCache  map[string]string
+	peerNameLoaded time.Time
+)
+
 // peerNameIndex builds a public-key → display-name map from the configured
-// peers. Lookups fall back to a truncated key when the peer isn't in the map
-// (e.g. a runtime-added peer not yet on disk).
+// peers. Result is cached for peerNameTTL; concurrent callers share one
+// refresh. Lookups for unknown keys fall back through the caller to a
+// truncated key.
 func peerNameIndex() map[string]string {
+	peerNameMu.RLock()
+	if peerNameCache != nil && time.Since(peerNameLoaded) < peerNameTTL {
+		out := peerNameCache
+		peerNameMu.RUnlock()
+		return out
+	}
+	peerNameMu.RUnlock()
+
+	peerNameMu.Lock()
+	defer peerNameMu.Unlock()
+	// Re-check after promoting the lock — another caller may have refreshed.
+	if peerNameCache != nil && time.Since(peerNameLoaded) < peerNameTTL {
+		return peerNameCache
+	}
+
 	peers, err := ListPeers()
 	if err != nil {
+		// Keep the previous cache on transient failure rather than blanking it.
+		if peerNameCache != nil {
+			return peerNameCache
+		}
 		return nil
 	}
-	out := make(map[string]string, len(peers))
+	fresh := make(map[string]string, len(peers))
 	for _, p := range peers {
 		if p.PublicKey != "" {
-			out[p.PublicKey] = p.Name
+			fresh[p.PublicKey] = p.Name
 		}
 	}
-	return out
+	peerNameCache = fresh
+	peerNameLoaded = time.Now()
+	return fresh
+}
+
+// resetPeerNameCache clears the cache. Intended for tests.
+func resetPeerNameCache() {
+	peerNameMu.Lock()
+	peerNameCache = nil
+	peerNameLoaded = time.Time{}
+	peerNameMu.Unlock()
 }
 
 func peerDisplay(pubKey string, names map[string]string) string {

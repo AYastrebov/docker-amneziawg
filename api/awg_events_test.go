@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -178,6 +180,36 @@ func TestAWGEventLoopSilentOnSeedFailure(t *testing.T) {
 type mockErr struct{ msg string }
 
 func (e *mockErr) Error() string { return e.msg }
+
+func TestPeerNameIndexCachesAcrossCalls(t *testing.T) {
+	cfgDir := setupTestConfig(t)
+	setupTestPaths(t, cfgDir)
+	resetPeerNameCache()
+	t.Cleanup(resetPeerNameCache)
+
+	first := peerNameIndex()
+	if first["Peer1PublicKeyBase64==="] != "1" {
+		t.Fatalf("peer1 missing from cache: %+v", first)
+	}
+
+	// Delete the peer dir; the cache should keep returning the prior result
+	// until the TTL elapses (cache reads aren't supposed to touch the FS).
+	if err := os.RemoveAll(filepath.Join(cfgDir, "peer1")); err != nil {
+		t.Fatal(err)
+	}
+
+	second := peerNameIndex()
+	if second["Peer1PublicKeyBase64==="] != "1" {
+		t.Errorf("expected stale cache hit, peer1 missing in %+v", second)
+	}
+
+	// Force-expire and confirm the next call refreshes from disk.
+	resetPeerNameCache()
+	third := peerNameIndex()
+	if _, present := third["Peer1PublicKeyBase64==="]; present {
+		t.Errorf("expected peer1 to be gone after refresh, still in %+v", third)
+	}
+}
 
 func TestShortKey(t *testing.T) {
 	cases := map[string]string{

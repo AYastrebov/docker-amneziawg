@@ -40,6 +40,7 @@ curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8081/api/v1/peers
 | `API_PORT` | `8081` | TCP listen port |
 | `API_TOKEN` | *(auto-generated)* | Bearer token for authentication |
 | `API_READONLY` | `true` | Read-only mode (future use) |
+| `API_SWAGGER` | `true` | Mount the unauthenticated Swagger UI at `/swagger/*`. Set to `false` in production to avoid exposing the API surface to anyone who can reach the port. |
 
 ## Authentication
 
@@ -57,7 +58,7 @@ ws://localhost:8081/api/v1/ws/stats?token=YOUR_TOKEN
 
 ## Swagger UI
 
-When the API is enabled, Swagger UI is at:
+When the API is enabled (and `API_SWAGGER` is left at its default `true`), Swagger UI is at:
 
 ```
 http://localhost:8081/swagger/index.html
@@ -68,6 +69,8 @@ OpenAPI JSON spec:
 ```
 http://localhost:8081/swagger/doc.json
 ```
+
+Both endpoints are **unauthenticated** by design (Swagger UI loads the spec from the browser). For internet-exposed deployments, set `API_SWAGGER=false` so that the spec — which lists every endpoint and its parameters — doesn't leak to attackers, or keep Swagger reachable only via your reverse proxy on an internal hostname.
 
 ## Endpoints
 

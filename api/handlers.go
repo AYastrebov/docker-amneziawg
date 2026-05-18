@@ -1,20 +1,59 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 
 	"github.com/gin-gonic/gin"
 )
+
+// readPeerFile opens a file rooted in a peer directory and reads its
+// contents. O_NOFOLLOW makes the call fail with ELOOP if any path component
+// is a symlink — defends against an attacker who could plant a symlink in
+// /config/peerX/ pointing at /etc/shadow or similar.
+//
+// Returns the same fs.ErrNotExist sentinel as os.ReadFile so handlers can
+// keep their existing 404 branch.
+func readPeerFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+// statPeerFile is the existence-check counterpart of readPeerFile — used by
+// the HEAD probe so we can confirm the file resolves to a real entry without
+// reading its contents.
+func statPeerFile(path string) error {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
 
 // logStore holds the in-memory log buffer. It's a package-level variable so
 // handlers can pick it up without a router-construction time injection, which
 // mirrors the existing pattern for configDir, getTunnelStatsFunc, etc.
 var logStore *LogStore
+
+// LogsResponse is the wire shape of GET /api/v1/logs body. Exists primarily
+// so swaggo can compose it into the OpenAPI spec — handlers use gin.H for
+// brevity.
+type LogsResponse struct {
+	Lines []LogLine `json:"lines"`
+	Next  string    `json:"next"`
+}
 
 // --- Response helpers ---
 
@@ -63,7 +102,7 @@ func handleHealth(c *gin.Context) {
 // @Tags server
 // @Produce json
 // @Security BearerAuth
-// @Success 200 {object} apiResponse
+// @Success 200 {object} apiResponse{data=ServerInfo}
 // @Failure 401 {object} apiError
 // @Failure 500 {object} apiError
 // @Router /api/v1/server [get]
@@ -82,7 +121,7 @@ func handleServer(c *gin.Context) {
 // @Tags server
 // @Produce json
 // @Security BearerAuth
-// @Success 200 {object} apiResponse
+// @Success 200 {object} apiResponse{data=map[string]string}
 // @Failure 401 {object} apiError
 // @Router /api/v1/version [get]
 func handleVersion(c *gin.Context) {
@@ -100,7 +139,7 @@ func handleVersion(c *gin.Context) {
 // @Tags server
 // @Produce json
 // @Security BearerAuth
-// @Success 200 {object} apiResponse
+// @Success 200 {object} apiResponse{data=SystemInfo}
 // @Failure 401 {object} apiError
 // @Failure 500 {object} apiError
 // @Router /api/v1/system [get]
@@ -119,7 +158,7 @@ func handleSystem(c *gin.Context) {
 // @Tags server
 // @Produce json
 // @Security BearerAuth
-// @Success 200 {object} apiResponse
+// @Success 200 {object} apiResponse{data=[]ServiceStatus}
 // @Failure 401 {object} apiError
 // @Router /api/v1/services [get]
 func handleServices(c *gin.Context) {
@@ -137,7 +176,7 @@ func handleServices(c *gin.Context) {
 // @Tags tunnels
 // @Produce json
 // @Security BearerAuth
-// @Success 200 {object} apiResponse
+// @Success 200 {object} apiResponse{data=[]TunnelInfo}
 // @Failure 401 {object} apiError
 // @Failure 500 {object} apiError
 // @Router /api/v1/tunnels [get]
@@ -157,7 +196,7 @@ func handleTunnels(c *gin.Context) {
 // @Produce json
 // @Param name path string true "Tunnel name (e.g. wg0)"
 // @Security BearerAuth
-// @Success 200 {object} apiResponse
+// @Success 200 {object} apiResponse{data=TunnelInfo}
 // @Failure 401 {object} apiError
 // @Failure 404 {object} apiError
 // @Failure 500 {object} apiError
@@ -184,7 +223,7 @@ func handleTunnel(c *gin.Context) {
 // @Tags peers
 // @Produce json
 // @Security BearerAuth
-// @Success 200 {object} apiResponse
+// @Success 200 {object} apiResponse{data=[]PeerInfo}
 // @Failure 401 {object} apiError
 // @Failure 500 {object} apiError
 // @Router /api/v1/peers [get]
@@ -204,7 +243,7 @@ func handlePeers(c *gin.Context) {
 // @Produce json
 // @Param id path string true "Peer ID (e.g. peer1, peer_laptop)"
 // @Security BearerAuth
-// @Success 200 {object} apiResponse
+// @Success 200 {object} apiResponse{data=PeerDetail}
 // @Failure 401 {object} apiError
 // @Failure 404 {object} apiError
 // @Failure 500 {object} apiError
@@ -215,7 +254,7 @@ func handlePeer(c *gin.Context) {
 
 	peer, err := GetPeerDetail(peerID)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			c.JSON(http.StatusNotFound, ErrorResponse("NOT_FOUND", fmt.Sprintf("Peer %s not found", id)))
 			return
 		}
@@ -242,9 +281,9 @@ func handlePeerConfig(c *gin.Context) {
 	peerID := ResolvePeerID(id)
 
 	confPath := filepath.Join(configDir, peerID, peerID+".conf")
-	data, err := os.ReadFile(confPath)
+	data, err := readPeerFile(confPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ELOOP) {
 			c.JSON(http.StatusNotFound, ErrorResponse("NOT_FOUND", fmt.Sprintf("Config for peer %s not found", id)))
 			return
 		}
@@ -274,9 +313,9 @@ func handlePeerQR(c *gin.Context) {
 	peerID := ResolvePeerID(id)
 
 	pngPath := filepath.Join(configDir, peerID, peerID+".png")
-	data, err := os.ReadFile(pngPath)
+	data, err := readPeerFile(pngPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ELOOP) {
 			c.JSON(http.StatusNotFound, ErrorResponse("NOT_FOUND", fmt.Sprintf("QR code for peer %s not found", id)))
 			return
 		}
@@ -302,8 +341,8 @@ func handlePeerQRHead(c *gin.Context) {
 	peerID := ResolvePeerID(id)
 
 	pngPath := filepath.Join(configDir, peerID, peerID+".png")
-	if _, err := os.Stat(pngPath); err != nil {
-		if os.IsNotExist(err) {
+	if err := statPeerFile(pngPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ELOOP) {
 			c.Status(http.StatusNotFound)
 			return
 		}
@@ -324,7 +363,7 @@ func handlePeerQRHead(c *gin.Context) {
 // @Param before query string false "Cursor for older pages: ULID line id or RFC3339 timestamp"
 // @Param level query string false "Comma-separated levels to include (debug,info,warn,error)"
 // @Param source query string false "Comma-separated sources to include (awg, api, ...)"
-// @Success 200 {object} apiResponse
+// @Success 200 {object} apiResponse{data=LogsResponse}
 // @Failure 401 {object} apiError
 // @Router /api/v1/logs [get]
 func handleLogs(c *gin.Context) {
@@ -349,8 +388,5 @@ func handleLogs(c *gin.Context) {
 		},
 	})
 
-	c.JSON(http.StatusOK, SuccessResponse(gin.H{
-		"lines": lines,
-		"next":  next,
-	}))
+	c.JSON(http.StatusOK, SuccessResponse(LogsResponse{Lines: lines, Next: next}))
 }

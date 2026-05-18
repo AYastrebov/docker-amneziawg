@@ -2,9 +2,63 @@ package main
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// --- O_NOFOLLOW symlink defense (H4) ---
+
+func TestPeerConfigRefusesSymlink(t *testing.T) {
+	cfgDir := setupTestConfig(t)
+	setupTestPaths(t, cfgDir)
+
+	// Replace peer1's .conf with a symlink to a sensitive file outside /config.
+	confPath := filepath.Join(cfgDir, "peer1", "peer1.conf")
+	if err := os.Remove(confPath); err != nil {
+		t.Fatal(err)
+	}
+	// Target doesn't have to exist for the symlink — but using /etc/hostname
+	// keeps the test deterministic across distros where it does exist.
+	if err := os.Symlink("/etc/hostname", confPath); err != nil {
+		t.Fatal(err)
+	}
+
+	r := setupTestRouter(t)
+	w := doRequest(r, http.MethodGet, "/api/v1/peers/1/config", authHeader())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for symlinked conf, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "/etc/hostname") || w.Body.Len() > 200 {
+		t.Errorf("response leaked symlink target: %s", w.Body.String())
+	}
+}
+
+func TestPeerQRRefusesSymlink(t *testing.T) {
+	cfgDir := setupTestConfig(t)
+	setupTestPaths(t, cfgDir)
+
+	pngPath := filepath.Join(cfgDir, "peer1", "peer1.png")
+	if err := os.Remove(pngPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc/hostname", pngPath); err != nil {
+		t.Fatal(err)
+	}
+
+	r := setupTestRouter(t)
+
+	w := doRequest(r, http.MethodGet, "/api/v1/peers/1/qr", authHeader())
+	if w.Code != http.StatusNotFound {
+		t.Errorf("GET expected 404 for symlinked qr, got %d", w.Code)
+	}
+
+	w = doRequest(r, http.MethodHead, "/api/v1/peers/1/qr", authHeader())
+	if w.Code != http.StatusNotFound {
+		t.Errorf("HEAD expected 404 for symlinked qr, got %d", w.Code)
+	}
+}
 
 // --- GET /api/v1/tunnels/:name ---
 

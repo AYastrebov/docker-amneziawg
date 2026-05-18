@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -49,8 +50,13 @@ func main() {
 	// Health check — no auth
 	r.GET("/health", handleHealth)
 
-	// Swagger UI — no auth
-	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+	// Swagger UI is opt-out via API_SWAGGER. Defaults to enabled for
+	// backward compatibility, but production deployments behind a public
+	// reverse proxy will want API_SWAGGER=false to avoid leaking the API
+	// surface to unauthenticated callers.
+	if swaggerEnabled() {
+		r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+	}
 
 	// Authenticated API routes
 	v1 := r.Group("/api/v1")
@@ -125,4 +131,20 @@ func main() {
 		log.Printf("Server shutdown error: %v", err)
 	}
 	fmt.Println("API server stopped")
+}
+
+// swaggerEnabled reports whether the Swagger UI should be mounted. Truthy
+// values: unset, "1", "true", "yes" (case-insensitive). Falsy: "0", "false",
+// "no". Anything else also disables it (fail-safe).
+func swaggerEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("API_SWAGGER")))
+	if v == "" {
+		return true
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
