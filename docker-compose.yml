@@ -67,10 +67,17 @@ services:
 
       # ---- CoreDNS ----
       # - USE_COREDNS=true                  # Enable CoreDNS (auto in server mode)
+
+      # ---- REST API (optional) ----
+      # - USE_API=true                      # Enable REST API
+      # - API_PORT=8081                     # API listen port (default: 8081)
+      # - API_TOKEN=                        # Bearer token (auto-generated if empty)
+      # - API_READONLY=true                 # Read-only mode (default: true)
     volumes:
       - ./config:/config
     ports:
       - 51820:51820/udp
+      # - 8081:8081/tcp                     # REST API (if USE_API=true)
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1

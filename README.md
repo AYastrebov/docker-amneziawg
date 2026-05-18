@@ -182,6 +182,26 @@ ports:
   - 32948:51820/udp  # NOT 32948:32948/udp
 ```
 
+## REST API
+
+An optional REST API is available for programmatic access to peer configs, QR codes, tunnel statistics, and server info. Enable it with `USE_API=true`.
+
+Features:
+- Peer listing, config download, QR code retrieval
+- Live tunnel statistics (transfer, handshake, endpoint)
+- WebSocket endpoint for real-time stats (2s updates)
+- Swagger UI at `/swagger/index.html`
+- Bearer token authentication (auto-generated)
+
+See **[API.md](API.md)** for full endpoint documentation and examples.
+
+```yaml
+environment:
+  - USE_API=true
+ports:
+  - 8081:8081/tcp
+```
+
 ## Show Peer QR Codes
 
 ```bash

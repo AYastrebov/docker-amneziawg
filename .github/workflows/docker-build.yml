@@ -128,7 +128,7 @@ jobs:
 
           # Check binaries exist
           echo "### Binary check" >> "$GITHUB_STEP_SUMMARY"
-          docker run --rm test-image ls -la /usr/bin/awg /usr/bin/awg-quick /usr/bin/amneziawg-go /usr/bin/wg /usr/bin/wg-quick
+          docker run --rm test-image ls -la /usr/bin/awg /usr/bin/awg-quick /usr/bin/amneziawg-go /usr/bin/wg /usr/bin/wg-quick /usr/bin/awg-api
           echo "- Binaries present" >> "$GITHUB_STEP_SUMMARY"
 
           # Check s6-overlay structure (all 4 services + branding)
@@ -138,6 +138,7 @@ jobs:
             test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/type && echo "init-amneziawg-confs: OK"
             test -f /etc/s6-overlay/s6-rc.d/svc-coredns/type && echo "svc-coredns: OK"
             test -f /etc/s6-overlay/s6-rc.d/svc-amneziawg/type && echo "svc-amneziawg: OK"
+            test -f /etc/s6-overlay/s6-rc.d/svc-awg-api/type && echo "svc-awg-api: OK"
             test -f /etc/s6-overlay/s6-rc.d/init-adduser/branding && echo "branding: OK"
           '
           echo "- All services registered" >> "$GITHUB_STEP_SUMMARY"
@@ -149,6 +150,7 @@ jobs:
             echo "init-amneziawg-confs: $(cat /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/type)"
             echo "svc-coredns: $(cat /etc/s6-overlay/s6-rc.d/svc-coredns/type)"
             echo "svc-amneziawg: $(cat /etc/s6-overlay/s6-rc.d/svc-amneziawg/type)"
+            echo "svc-awg-api: $(cat /etc/s6-overlay/s6-rc.d/svc-awg-api/type)"
           '
           echo "- Service types verified" >> "$GITHUB_STEP_SUMMARY"
 
@@ -159,6 +161,7 @@ jobs:
             test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/dependencies.d/init-amneziawg-module && echo "confs depends on module: OK"
             test -f /etc/s6-overlay/s6-rc.d/svc-coredns/dependencies.d/init-services && echo "coredns depends on init-services: OK"
             test -f /etc/s6-overlay/s6-rc.d/svc-amneziawg/dependencies.d/svc-coredns && echo "amneziawg depends on coredns: OK"
+            test -f /etc/s6-overlay/s6-rc.d/svc-awg-api/dependencies.d/svc-amneziawg && echo "awg-api depends on amneziawg: OK"
           '
           echo "- Dependency chain correct" >> "$GITHUB_STEP_SUMMARY"
 
@@ -166,6 +169,7 @@ jobs:
           echo "### Scripts and defaults" >> "$GITHUB_STEP_SUMMARY"
           docker run --rm test-image sh -c '
             test -x /app/show-peer && echo "show-peer: executable"
+            test -x /usr/bin/awg-api && echo "awg-api: executable"
             test -f /defaults/server.conf && echo "server.conf template: present"
             test -f /defaults/peer.conf && echo "peer.conf template: present"
             test -f /defaults/Corefile && echo "Corefile: present"

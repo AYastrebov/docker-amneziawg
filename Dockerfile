@@ -38,7 +38,21 @@ RUN make && \
     chmod +x /tools-install/usr/bin/awg-quick
 
 # ============================================================================
-# Stage 3: Runtime image using LinuxServer base
+# Stage 3: Compile REST API server
+# ============================================================================
+FROM golang:1.24.4-alpine AS api-builder
+
+RUN go install github.com/swaggo/swag/cmd/swag@latest
+
+WORKDIR /src/api
+COPY api/go.mod api/go.sum ./
+RUN go mod download
+COPY api/ .
+RUN swag init --parseDependency --output docs
+RUN CGO_ENABLED=0 go build -ldflags '-s -w' -trimpath -o /awg-api .
+
+# ============================================================================
+# Stage 4: Runtime image using LinuxServer base
 # ============================================================================
 FROM ghcr.io/linuxserver/baseimage-alpine:3.21
 
@@ -81,6 +95,7 @@ RUN \
 COPY --from=go-builder /src/amneziawg-go /usr/bin/
 COPY --from=tools-builder /tools-install/usr/bin/awg /usr/bin/
 COPY --from=tools-builder /tools-install/usr/bin/awg-quick /usr/bin/
+COPY --from=api-builder /awg-api /usr/bin/
 
 # Create symlinks for WireGuard compatibility
 RUN \
@@ -105,3 +120,5 @@ COPY /root /
 
 # ports and volumes
 EXPOSE 51820/udp
+# REST API (optional, enable with USE_API=true)
+EXPOSE 8081/tcp

@@ -31,12 +31,13 @@ There is no automated test suite. CI runs smoke tests on PRs: binary presence, s
 
 ## Architecture
 
-### Dockerfile: 3-stage multi-arch build
+### Dockerfile: 4-stage multi-arch build
 
 | Stage | Base | Output |
 |---|---|---|
 | `go-builder` | `golang:1.24.4-alpine` | `/src/amneziawg-go` (static binary, CGO) |
 | `tools-builder` | `alpine:3.21` | `/usr/bin/awg` (compiled C) + `/usr/bin/awg-quick` (bash script copied from `src/wg-quick/linux.bash`) |
+| `api-builder` | `golang:1.24.4-alpine` | `/awg-api` (static binary, pure Go + Gin + Swagger) |
 | runtime | `ghcr.io/linuxserver/baseimage-alpine:3.21` | Production image |
 
 Runtime creates compatibility symlinks: `wg → awg`, `wg-quick → awg-quick`, `/etc/wireguard → /config/wg_confs`.
@@ -44,13 +45,14 @@ Runtime creates compatibility symlinks: `wg → awg`, `wg-quick → awg-quick`, 
 ### s6-overlay service chain
 
 ```
-init-config (LSIO) → init-amneziawg-module (oneshot) → init-amneziawg-confs (oneshot) → svc-coredns (longrun) → svc-amneziawg (oneshot)
+init-config (LSIO) → init-amneziawg-module (oneshot) → init-amneziawg-confs (oneshot) → svc-coredns (longrun) → svc-amneziawg (oneshot) → svc-awg-api (longrun)
 ```
 
 - **init-amneziawg-module**: Tests kernel support via `ip link add dev test type wireguard`. Falls back to `amneziawg-go` userspace (exports `WG_QUICK_USERSPACE_IMPLEMENTATION`).
 - **init-amneziawg-confs**: Config generation using eval+heredoc template expansion from `/config/templates/`. Server mode generates keys, wg0.conf, peer configs, QR codes. Client mode disables CoreDNS.
 - **svc-coredns**: Longrun CoreDNS service with `notification-fd 3` health checks. Auto-disabled if port 53 already bound (and `USE_COREDNS` not explicitly set) or `USE_COREDNS=false`. In client mode, defaults to `false` unless overridden. Disabling in server mode breaks DNS for peers using `PEERDNS=auto` — set `PEERDNS` to a public resolver.
 - **svc-amneziawg**: Oneshot service (up/down scripts). Validates `[Interface]` in each .conf, activates tunnels, saves active confs to `/run/activeconfs` via `declare -p`. Finish script tears down in reverse order.
+- **svc-awg-api**: Optional longrun REST API service (`USE_API=true`). Go binary (`/usr/bin/awg-api`) with Gin framework, Swagger UI, and WebSocket stats. Depends on `svc-amneziawg`. Disabled by default — runs `sleep infinity` when `USE_API != true`. Token auto-generated to `/config/server/api_token` on first run. Health check via `nc -z localhost ${API_PORT}`.
 
 Dependencies are declared via empty files in `dependencies.d/`. Services are registered via empty files in `user/contents.d/`.
 
