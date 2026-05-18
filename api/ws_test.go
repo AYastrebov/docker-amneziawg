@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"go.uber.org/goleak"
 )
 
 func TestWebSocket_AuthRequired(t *testing.T) {
@@ -117,4 +118,36 @@ func TestHub_Shutdown(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("hub did not stop after context cancellation")
 	}
+}
+
+func TestHub_NoGoroutineLeakOnClientDisconnect(t *testing.T) {
+	defer goleak.VerifyNone(t,
+		// httptest leaves a background goroutine; not our concern.
+		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
+		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
+		// Hub.Run is cancelled by t.Cleanup which fires after this deferred
+		// check; we trust other tests to catch hub leakage on shutdown.
+		goleak.IgnoreTopFunction("awg-api.(*Hub).Run"),
+	)
+
+	r := setupTestRouter(t)
+	mockTunnelStats(t)
+	server := httptest.NewServer(r)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") +
+		"/api/v1/ws/stats?token=" + testToken
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	// Read initial snapshot so we know the server-side goroutines are up.
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	_ = conn.Close()
+	// Give the server side time to notice and tear down.
+	time.Sleep(200 * time.Millisecond)
 }

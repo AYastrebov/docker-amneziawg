@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,7 +27,7 @@ func readPeerFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return io.ReadAll(f)
 }
 
@@ -58,7 +58,7 @@ type LogsResponse struct {
 // --- Response helpers ---
 
 type apiResponse struct {
-	Data interface{} `json:"data,omitempty"`
+	Data any `json:"data,omitempty"`
 }
 
 type apiError struct {
@@ -70,7 +70,7 @@ type errorDetail struct {
 	Message string `json:"message"`
 }
 
-func SuccessResponse(data interface{}) apiResponse {
+func SuccessResponse(data any) apiResponse {
 	return apiResponse{Data: data}
 }
 
@@ -79,7 +79,11 @@ func ErrorResponse(code, message string) apiError {
 }
 
 func internalError(c *gin.Context, err error) {
-	log.Printf("internal error: %v", err)
+	slog.Error("internal error",
+		"err", err,
+		"path", c.Request.URL.Path,
+		"method", c.Request.Method,
+	)
 	c.JSON(http.StatusInternalServerError, ErrorResponse("INTERNAL_ERROR", "Internal server error"))
 }
 
@@ -367,11 +371,6 @@ func handlePeerQRHead(c *gin.Context) {
 // @Failure 401 {object} apiError
 // @Router /api/v1/logs [get]
 func handleLogs(c *gin.Context) {
-	if logStore == nil {
-		internalError(c, fmt.Errorf("log store not initialized"))
-		return
-	}
-
 	limit := 200
 	if raw := c.Query("limit"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {

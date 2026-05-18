@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"sync"
@@ -75,7 +76,7 @@ func runAWGEventLoop(ctx context.Context, store *LogStore, interval time.Duratio
 						fmt.Sprintf("peer %s appeared on %s", display, t.Name))
 				case prev.latestHandshake != ns.latestHandshake && ns.latestHandshake != "":
 					store.Append(LogLevelInfo, LogSourceAWG,
-						fmt.Sprintf("peer %s handshake completed (endpoint %s)", display, fallback(p.Endpoint, "unknown")))
+						fmt.Sprintf("peer %s handshake completed (endpoint %s)", display, cmp.Or(p.Endpoint, "unknown")))
 				}
 			}
 		}
@@ -182,11 +183,4 @@ func shortKey(pubKey string) string {
 		return pubKey
 	}
 	return pubKey[:8] + "…"
-}
-
-func fallback(v, def string) string {
-	if v == "" {
-		return def
-	}
-	return v
 }

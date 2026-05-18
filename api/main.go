@@ -1,9 +1,15 @@
+// Package main is the docker-amneziawg REST API service. It exposes a
+// read-only HTTP/WebSocket surface for the panel and Telegram bot to monitor
+// the container: server info, tunnel and peer state, host metrics, s6
+// service status, and a structured log feed. Authentication is a single
+// bearer token loaded from API_TOKEN; the swagger annotations on each
+// handler document the contract.
 package main
 
 import (
 	"context"
-	"fmt"
-	"log"
+	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,6 +35,10 @@ import (
 // @description Bearer token authentication. Use "Bearer <token>" format.
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
+
 	port := os.Getenv("API_PORT")
 	if port == "" {
 		port = "8081"
@@ -36,12 +46,13 @@ func main() {
 
 	token := os.Getenv("API_TOKEN")
 	if token == "" {
-		log.Fatal("API_TOKEN environment variable is required")
+		slog.Error("API_TOKEN environment variable is required")
+		os.Exit(1)
 	}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.SetTrustedProxies(nil)
+	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.Recovery())
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
 		SkipPaths: []string{"/health"},
@@ -112,9 +123,10 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("AmneziaWG API listening on :%s", port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("API server error: %v", err)
+		slog.Info("api listening", "port", port)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("api server error", "err", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -123,14 +135,15 @@ func main() {
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 	<-quit
 
-	log.Println("Shutting down API server...")
+	slog.Info("shutting down api server")
 	bgCancel()
+	logStore.Close()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Server shutdown error: %v", err)
+		slog.Error("server shutdown error", "err", err)
 	}
-	fmt.Println("API server stopped")
+	slog.Info("api server stopped")
 }
 
 // swaggerEnabled reports whether the Swagger UI should be mounted. Truthy

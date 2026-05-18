@@ -18,10 +18,10 @@ var (
 
 // SystemInfo describes the host's runtime state.
 type SystemInfo struct {
-	CPU     CPUInfo    `json:"cpu"`
-	Memory  MemoryInfo `json:"memory"`
-	Disk    DiskInfo   `json:"disk"`
-	Uptime  float64    `json:"uptime_seconds"`
+	CPU    CPUInfo    `json:"cpu"`
+	Memory MemoryInfo `json:"memory"`
+	Disk   DiskInfo   `json:"disk"`
+	Uptime float64    `json:"uptime_seconds"`
 }
 
 // CPUInfo holds load averages and core count.
@@ -86,7 +86,7 @@ func readMeminfo() MemoryInfo {
 	if err != nil {
 		return MemoryInfo{}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var total, available uint64
 	scanner := bufio.NewScanner(f)

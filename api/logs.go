@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/json"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strings"
@@ -61,9 +63,15 @@ type LogQuery struct {
 }
 
 // LogStore is an in-memory bounded log buffer with pub/sub.
+//
+// Storage is a true ring buffer (head + len), so writes are O(1) regardless
+// of capacity. Each stored line carries its pre-marshaled JSON bytes so the
+// WebSocket fan-out doesn't re-marshal per subscriber.
 type LogStore struct {
 	mu       sync.RWMutex
-	lines    []LogLine
+	ring     []logEntry
+	head     int // index of the oldest entry
+	length   int // current number of entries (≤ capacity)
 	capacity int
 
 	subMu sync.Mutex
@@ -72,16 +80,28 @@ type LogStore struct {
 	scrubber *Scrubber
 }
 
+// logEntry pairs a LogLine with its pre-marshaled JSON for WS fan-out.
+type logEntry struct {
+	line LogLine
+	raw  []byte
+}
+
+// LogEvent is what subscribers receive on their channel.
+type LogEvent struct {
+	Line LogLine
+	Raw  []byte // JSON-encoded LogLine; cached so each subscriber doesn't re-marshal
+}
+
 // LogSub is a single subscriber's channels.
 type LogSub struct {
-	ch       chan LogLine
+	ch       chan LogEvent
 	overflow chan struct{}
 	done     chan struct{}
 	once     sync.Once
 }
 
-// Recv returns the receive channels: lines, overflow signal, done signal.
-func (s *LogSub) Recv() (<-chan LogLine, <-chan struct{}, <-chan struct{}) {
+// Recv returns the receive channels: events, overflow signal, done signal.
+func (s *LogSub) Recv() (<-chan LogEvent, <-chan struct{}, <-chan struct{}) {
 	return s.ch, s.overflow, s.done
 }
 
@@ -91,7 +111,7 @@ func NewLogStore(capacity int) *LogStore {
 		capacity = 1000
 	}
 	return &LogStore{
-		lines:    make([]LogLine, 0, capacity),
+		ring:     make([]logEntry, capacity),
 		capacity: capacity,
 		subs:     map[*LogSub]struct{}{},
 		scrubber: NewScrubber(),
@@ -111,29 +131,39 @@ func (s *LogStore) Append(level, source, msg string) LogLine {
 		ts:     now,
 	}
 
-	s.mu.Lock()
-	if len(s.lines) >= s.capacity {
-		// Drop oldest. Copy is fine for the workload (writes are infrequent
-		// compared to reads in steady state).
-		copy(s.lines, s.lines[1:])
-		s.lines = s.lines[:len(s.lines)-1]
+	// Marshal once, here — subscribers all forward the same bytes.
+	raw, err := json.Marshal(line)
+	if err != nil {
+		// Should be impossible for a struct of strings, but log and bail
+		// gracefully instead of poisoning the buffer with a nil payload.
+		slog.Error("log line marshal failed", "err", err, "id", line.ID)
+		return line
 	}
-	s.lines = append(s.lines, line)
+
+	s.mu.Lock()
+	idx := (s.head + s.length) % s.capacity
+	if s.length < s.capacity {
+		s.length++
+	} else {
+		// Overwrite oldest; advance head.
+		s.head = (s.head + 1) % s.capacity
+	}
+	s.ring[idx] = logEntry{line: line, raw: raw}
 	s.mu.Unlock()
 
-	s.broadcast(line)
+	s.broadcast(LogEvent{Line: line, Raw: raw})
 	return line
 }
 
-// broadcast sends line to every subscriber non-blocking. If a subscriber's
+// broadcast sends event to every subscriber non-blocking. If a subscriber's
 // buffer is full, it gets an overflow signal instead — the WS handler treats
 // that as a backpressure close (code 1013).
-func (s *LogStore) broadcast(line LogLine) {
+func (s *LogStore) broadcast(event LogEvent) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	for sub := range s.subs {
 		select {
-		case sub.ch <- line:
+		case sub.ch <- event:
 		default:
 			select {
 			case sub.overflow <- struct{}{}:
@@ -169,8 +199,10 @@ func (s *LogStore) Query(q LogQuery) ([]LogLine, string) {
 	defer s.mu.RUnlock()
 
 	out := make([]LogLine, 0, limit)
-	for i := len(s.lines) - 1; i >= 0 && len(out) < limit; i-- {
-		line := s.lines[i]
+	// Walk the ring from newest to oldest.
+	for i := s.length - 1; i >= 0 && len(out) < limit; i-- {
+		entry := s.ring[(s.head+i)%s.capacity]
+		line := entry.line
 		if !beforeTime.IsZero() && !line.ts.Before(beforeTime) {
 			continue
 		}
@@ -190,12 +222,15 @@ func (s *LogStore) Query(q LogQuery) ([]LogLine, string) {
 	return out, next
 }
 
-// Snapshot returns the full backing slice (copy) — for tests and diagnostics.
+// Snapshot returns a copy of all stored lines, oldest first — for tests and
+// diagnostics.
 func (s *LogStore) Snapshot() []LogLine {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]LogLine, len(s.lines))
-	copy(out, s.lines)
+	out := make([]LogLine, s.length)
+	for i := 0; i < s.length; i++ {
+		out[i] = s.ring[(s.head+i)%s.capacity].line
+	}
 	return out
 }
 
@@ -205,7 +240,7 @@ func (s *LogStore) Subscribe(bufSize int) *LogSub {
 		bufSize = 64
 	}
 	sub := &LogSub{
-		ch:       make(chan LogLine, bufSize),
+		ch:       make(chan LogEvent, bufSize),
 		overflow: make(chan struct{}, 1),
 		done:     make(chan struct{}),
 	}
@@ -225,6 +260,24 @@ func (s *LogStore) Unsubscribe(sub *LogSub) {
 	})
 }
 
+// Close releases all subscribers (closing each sub's done channel) so any
+// goroutine waiting in HandleLogsWebSocket unwinds. Safe to call once at
+// shutdown; subsequent Append/Subscribe calls still work but no longer reach
+// the closed subs.
+func (s *LogStore) Close() {
+	s.subMu.Lock()
+	subs := make([]*LogSub, 0, len(s.subs))
+	for sub := range s.subs {
+		subs = append(subs, sub)
+	}
+	s.subs = map[*LogSub]struct{}{}
+	s.subMu.Unlock()
+
+	for _, sub := range subs {
+		sub.once.Do(func() { close(sub.done) })
+	}
+}
+
 // --- Scrubber ---
 
 // Scrubber masks sensitive substrings (private keys, preshared keys, bearer
@@ -242,7 +295,7 @@ func NewScrubber() *Scrubber {
 			regexp.MustCompile(`(?i)(private[_-]?key\s*[:=]\s*)\S+`),
 			regexp.MustCompile(`(?i)(preshared[_-]?key\s*[:=]\s*)\S+`),
 			// Bearer tokens (32+ hex chars, matches our generated tokens).
-			regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9_\-\.]{16,}`),
+			regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9_\-.]{16,}`),
 		},
 	}
 }

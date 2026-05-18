@@ -12,11 +12,11 @@ import (
 
 // Package-level paths — overridden in tests.
 var (
-	configDir      = "/config"
-	activeConfsPath = "/run/activeconfs"
-	uptimePath      = "/proc/uptime"
+	configDir        = "/config"
+	activeConfsPath  = "/run/activeconfs"
+	uptimePath       = "/proc/uptime"
 	buildVersionPath = "/build_version"
-	s6EnvDir        = "/run/s6-overlay/container_environment"
+	s6EnvDir         = "/run/s6-overlay/container_environment"
 )
 
 // ServerInfo holds aggregated server information.
@@ -165,7 +165,7 @@ func ListPeers() ([]PeerInfo, error) {
 		return nil, fmt.Errorf("reading config dir: %w", err)
 	}
 
-	var peers []PeerInfo
+	peers := make([]PeerInfo, 0, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() || !strings.HasPrefix(e.Name(), "peer") {
 			continue
@@ -196,10 +196,6 @@ func ListPeers() ([]PeerInfo, error) {
 		}
 
 		peers = append(peers, p)
-	}
-
-	if peers == nil {
-		peers = []PeerInfo{}
 	}
 	return peers, nil
 }
@@ -269,7 +265,7 @@ func extractAddressFromConf(confPath string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -299,7 +295,7 @@ func readAWGParams() map[string]string {
 	if err != nil {
 		return params
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

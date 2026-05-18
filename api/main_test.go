@@ -7,7 +7,7 @@ func TestSwaggerEnabled(t *testing.T) {
 		env  string
 		want bool
 	}{
-		{"", true},          // default-on
+		{"", true}, // default-on
 		{"true", true},
 		{"TRUE", true},
 		{"1", true},

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -52,7 +53,8 @@ func getTunnelStatsReal() ([]TunnelInfo, error) {
 	out, err := exec.Command(awgBinary, "show", "all", "dump").Output()
 	if err != nil {
 		// Tunnels may be down — return empty list instead of error
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() != 0 {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() != 0 {
 			return []TunnelInfo{}, nil
 		}
 		return nil, err

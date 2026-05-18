@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -140,9 +141,12 @@ func TestLogStoreSubscribeBroadcast(t *testing.T) {
 
 	ch, _, _ := sub.Recv()
 	select {
-	case line := <-ch:
-		if line.Msg != "broadcasted" {
-			t.Errorf("got msg %q", line.Msg)
+	case event := <-ch:
+		if event.Line.Msg != "broadcasted" {
+			t.Errorf("got msg %q", event.Line.Msg)
+		}
+		if len(event.Raw) == 0 {
+			t.Errorf("expected pre-marshaled bytes, got empty")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("did not receive broadcast")
@@ -166,6 +170,22 @@ func TestLogStoreSubscribeOverflow(t *testing.T) {
 		// expected
 	case <-time.After(time.Second):
 		t.Fatal("expected overflow signal, none received")
+	}
+}
+
+func TestLogStoreCloseUnblocksSubscribers(t *testing.T) {
+	store := NewLogStore(10)
+
+	sub := store.Subscribe(8)
+	_, _, done := sub.Recv()
+
+	store.Close()
+
+	select {
+	case <-done:
+		// expected
+	case <-time.After(time.Second):
+		t.Fatal("done channel should be closed after store.Close()")
 	}
 }
 
@@ -276,20 +296,8 @@ func TestParseCSV(t *testing.T) {
 	}
 	for _, tc := range cases {
 		got := parseCSV(tc.in)
-		if !equalStrings(got, tc.want) {
+		if !slices.Equal(got, tc.want) {
 			t.Errorf("parseCSV(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -106,7 +106,7 @@ func (h *Hub) Run(ctx context.Context) {
 				default:
 				}
 			} else {
-				log.Printf("stats: initial snapshot marshal failed: %v", err)
+				slog.Error("stats: initial snapshot marshal failed", "err", err)
 			}
 
 		case client := <-h.unregister:
@@ -123,7 +123,7 @@ func (h *Hub) Run(ctx context.Context) {
 			snapshot := GetTunnelStatsSnapshot()
 			data, err := json.Marshal(snapshot)
 			if err != nil {
-				log.Printf("stats: snapshot marshal failed: %v", err)
+				slog.Error("stats: snapshot marshal failed", "err", err)
 				continue
 			}
 
@@ -158,7 +158,7 @@ func (h *Hub) Run(ctx context.Context) {
 func HandleWebSocket(hub *Hub, c *gin.Context) {
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("stats WebSocket upgrade error: %v", err)
+		slog.Error("stats websocket upgrade failed", "err", err)
 		return
 	}
 
@@ -182,7 +182,7 @@ func HandleWebSocket(hub *Hub, c *gin.Context) {
 	writeDone := make(chan struct{})
 	go func() {
 		defer close(writeDone)
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for {
 			select {
 			case data, ok := <-client.send:
@@ -231,15 +231,15 @@ func HandleLogsWebSocket(store *LogStore, c *gin.Context) {
 
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("logs WebSocket upgrade error: %v", err)
+		slog.Error("logs websocket upgrade failed", "err", err)
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	sub := store.Subscribe(128)
 	defer store.Unsubscribe(sub)
 
-	lineCh, overflowCh, doneCh := sub.Recv()
+	eventCh, overflowCh, doneCh := sub.Recv()
 
 	// Read pump: any read error (incl. client close) ends the loop.
 	readDone := make(chan struct{})
@@ -256,20 +256,15 @@ func HandleLogsWebSocket(store *LogStore, c *gin.Context) {
 
 	for {
 		select {
-		case line, ok := <-lineCh:
+		case event, ok := <-eventCh:
 			if !ok {
 				return
 			}
-			if !filter.Matches(line) {
-				continue
-			}
-			data, err := json.Marshal(line)
-			if err != nil {
-				log.Printf("logs: line marshal failed: %v", err)
+			if !filter.Matches(event.Line) {
 				continue
 			}
 			_ = conn.SetWriteDeadline(time.Now().Add(wsLogsWriteTimeout))
-			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			if err := conn.WriteMessage(websocket.TextMessage, event.Raw); err != nil {
 				return
 			}
 

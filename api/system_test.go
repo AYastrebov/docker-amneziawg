@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -141,17 +142,8 @@ func TestSystemInfoJSONFields(t *testing.T) {
 	}
 	body := string(data)
 	for _, want := range []string{`"cpu":`, `"load_1m":0.1`, `"cores":2`, `"memory":`, `"total_bytes":1024`, `"used_percent":50`, `"disk":`, `"path":"/x"`, `"uptime_seconds":99.5`} {
-		if !contains(body, want) {
+		if !strings.Contains(body, want) {
 			t.Errorf("JSON missing %q in %s", want, body)
 		}
 	}
-}
-
-func contains(s, substr string) bool {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
