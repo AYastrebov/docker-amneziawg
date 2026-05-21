@@ -226,7 +226,7 @@ jobs:
 
           echo "## API sidecar smoke tests" >> "$GITHUB_STEP_SUMMARY"
 
-          docker run --rm test-api-image sh -c '
+          docker run --rm --entrypoint sh test-api-image -c '
             test -x /usr/bin/awg && echo "awg: executable"
             test -x /usr/bin/awg-quick && echo "awg-quick: executable"
             test -x /usr/bin/awg-api && echo "awg-api: executable"
