@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-// Package-level paths — overridden in tests.
+// Package-level paths — overridden in tests or via environment variables
+// for sidecar deployments (see specs/api-decoupling.md).
 var (
 	configDir        = "/config"
 	activeConfsPath  = "/run/activeconfs"
@@ -18,6 +19,21 @@ var (
 	buildVersionPath = "/build_version"
 	s6EnvDir         = "/run/s6-overlay/container_environment"
 )
+
+func init() {
+	if v := os.Getenv("CONFIG_DIR"); v != "" {
+		configDir = v
+	}
+	if v := os.Getenv("ACTIVE_CONFS_PATH"); v != "" {
+		activeConfsPath = v
+	}
+	if v := os.Getenv("BUILD_VERSION_PATH"); v != "" {
+		buildVersionPath = v
+	}
+	if v := os.Getenv("S6_ENV_DIR"); v != "" {
+		s6EnvDir = v
+	}
+}
 
 // ServerInfo holds aggregated server information.
 type ServerInfo struct {

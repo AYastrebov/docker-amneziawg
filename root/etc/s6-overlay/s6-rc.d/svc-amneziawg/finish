@@ -3,10 +3,15 @@
 
 if [[ -f "/run/activeconfs" ]]; then
     . /run/activeconfs
+elif [[ -f "/config/server/activeconfs" ]]; then
+    . /config/server/activeconfs
+fi
+
+if [[ -n "${AWG_CONFS[*]}" ]]; then
     for tunnel in $(printf '%s\n' "${AWG_CONFS[@]}" | tac | tr '\n' ' '; echo); do
         echo "**** Disabling tunnel ${tunnel} ****"
         awg-quick down "${tunnel}" || :
     done
     echo "**** All tunnels are down ****"
-    rm -rf /run/activeconfs
+    rm -rf /run/activeconfs /config/server/activeconfs
 fi

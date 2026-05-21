@@ -67,22 +67,37 @@ services:
 
       # ---- CoreDNS ----
       # - USE_COREDNS=true                  # Enable CoreDNS (auto in server mode)
-
-      # ---- REST API (optional) ----
-      # - USE_API=true                      # Enable REST API
-      # - API_PORT=8081                     # API listen port (default: 8081)
-      # - API_TOKEN=                        # Bearer token (auto-generated if empty)
-      # - API_READONLY=true                 # Read-only mode (default: true)
     volumes:
       - ./config:/config
     ports:
       - 51820:51820/udp
-      # - 8081:8081/tcp                     # REST API (if USE_API=true)
+      # - 8081:8081/tcp                     # REST API (published here, used by sidecar)
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
       - net.ipv6.conf.all.disable_ipv6=0
     restart: unless-stopped
+
+  # ---- Optional: REST API sidecar ----
+  # Uncomment to enable the REST API on port 8081.
+  # Shares the VPN container's network namespace (required for `awg show`).
+  # Port 8081 must be published on the amneziawg service above.
+  #
+  # awg-api:
+  #   image: ghcr.io/ayastrebov/awg-api:latest
+  #   container_name: awg-api
+  #   network_mode: service:amneziawg
+  #   depends_on:
+  #     amneziawg:
+  #       condition: service_started
+  #   volumes:
+  #     - ./config:/config
+  #   environment:
+  #     # - API_TOKEN=                      # Auto-generated if empty
+  #     # - API_PORT=8081                   # API listen port
+  #     # - API_SWAGGER=true                # Swagger UI at /swagger/index.html
+  #     - WAIT_FOR_CONFIG=true              # Wait for VPN to generate configs
+  #   restart: unless-stopped
 
 # ============================================================================
 # Example: Server Mode with 3 peers

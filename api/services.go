@@ -21,7 +21,6 @@ var (
 	knownServices  = []string{
 		"svc-amneziawg",
 		"svc-coredns",
-		"svc-awg-api",
 	}
 )
 

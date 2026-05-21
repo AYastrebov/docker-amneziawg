@@ -9,12 +9,18 @@ import (
 	"syscall"
 )
 
-// Package-level paths — overridable in tests.
+// Package-level paths — overridable in tests or via CONFIG_DIR env.
 var (
 	loadavgPath = "/proc/loadavg"
 	meminfoPath = "/proc/meminfo"
 	diskPath    = "/config"
 )
+
+func init() {
+	if v := os.Getenv("CONFIG_DIR"); v != "" {
+		diskPath = v
+	}
+}
 
 // SystemInfo describes the host's runtime state.
 type SystemInfo struct {

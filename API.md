@@ -4,20 +4,32 @@ REST API for reading peer configs, tunnel stats, and server info. Useful if you'
 
 ## Quick Start
 
-1. Enable the API in your `docker-compose.yml`:
+1. Add the `awg-api` sidecar to your `docker-compose.yml`:
 
 ```yaml
-environment:
-  - USE_API=true
-ports:
-  - 8081:8081/tcp
+services:
+  amneziawg:
+    image: ghcr.io/ayastrebov/docker-amneziawg:latest
+    # ... (existing VPN config)
+    ports:
+      - 51820:51820/udp
+      - 8081:8081/tcp          # API port — published here because sidecar shares netns
+
+  awg-api:
+    image: ghcr.io/ayastrebov/awg-api:latest
+    network_mode: service:amneziawg
+    depends_on: [amneziawg]
+    volumes:
+      - ./config:/config
+    environment:
+      - WAIT_FOR_CONFIG=true
 ```
 
-2. Start the container. The API token is auto-generated and printed in logs:
+2. Start the stack. The API token is auto-generated and printed in sidecar logs:
 
 ```
-**** API token generated: a1b2c3d4e5f6... ****
-**** Save this token — it will not be shown again ****
+API token generated: a1b2c3d4e5f6...
+Save this token — it will not be shown again
 ```
 
 The token is also saved to `/config/server/api_token`.
@@ -34,13 +46,16 @@ curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8081/api/v1/peers
 
 ## Configuration
 
+These environment variables are set on the `awg-api` sidecar container:
+
 | Variable | Default | Description |
 |---|---|---|
-| `USE_API` | `false` | Enable the REST API |
 | `API_PORT` | `8081` | TCP listen port |
 | `API_TOKEN` | *(auto-generated)* | Bearer token for authentication |
-| `API_READONLY` | `true` | Read-only mode (future use) |
 | `API_SWAGGER` | `true` | Mount the unauthenticated Swagger UI at `/swagger/*`. Set to `false` in production to avoid exposing the API surface to anyone who can reach the port. |
+| `CONFIG_DIR` | `/config` | Path to the shared config volume |
+| `WAIT_FOR_CONFIG` | `false` | Wait for VPN to populate config before starting |
+| `WAIT_TIMEOUT` | `60` | Seconds to wait for config (when `WAIT_FOR_CONFIG=true`) |
 
 ## Authentication
 

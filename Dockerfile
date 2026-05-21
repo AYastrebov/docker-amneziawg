@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # Dockerfile for AmneziaWG with LinuxServer.io architecture
-# Multi-stage build: compile amneziawg-go, awg-tools, then create runtime image
+# Multi-stage build with two final targets:
+#   - runtime  (default): VPN container with s6-overlay
+#   - awg-api:            lightweight API sidecar
 
 # Upstream version defaults — override via --build-arg or CI
 ARG AMNEZIAWG_GO_VERSION=v0.2.18
@@ -52,9 +54,9 @@ RUN swag init --parseDependency --output docs
 RUN CGO_ENABLED=0 go build -ldflags '-s -w' -trimpath -o /awg-api .
 
 # ============================================================================
-# Stage 4: Runtime image using LinuxServer base
+# Stage 4a: Runtime image using LinuxServer base (default target)
 # ============================================================================
-FROM ghcr.io/linuxserver/baseimage-alpine:3.21
+FROM ghcr.io/linuxserver/baseimage-alpine:3.21 AS runtime
 
 # set version label
 ARG BUILD_DATE
@@ -91,11 +93,10 @@ RUN \
   rm -rf \
     /tmp/*
 
-# Copy compiled binaries from builder stages
+# Copy compiled binaries from builder stages (no API binary — use sidecar)
 COPY --from=go-builder /src/amneziawg-go /usr/bin/
 COPY --from=tools-builder /tools-install/usr/bin/awg /usr/bin/
 COPY --from=tools-builder /tools-install/usr/bin/awg-quick /usr/bin/
-COPY --from=api-builder /awg-api /usr/bin/
 
 # Create symlinks for WireGuard compatibility
 RUN \
@@ -120,5 +121,29 @@ COPY /root /
 
 # ports and volumes
 EXPOSE 51820/udp
-# REST API (optional, enable with USE_API=true)
+
+# ============================================================================
+# Stage 4b: API sidecar image (build with --target awg-api)
+# ============================================================================
+FROM alpine:3.21 AS awg-api
+
+RUN apk add --no-cache ca-certificates netcat-openbsd bash
+
+# awg + awg-quick for tunnel stats and potential future write operations
+COPY --from=tools-builder /tools-install/usr/bin/awg /usr/bin/awg
+COPY --from=tools-builder /tools-install/usr/bin/awg-quick /usr/bin/awg-quick
+RUN chmod +x /usr/bin/awg /usr/bin/awg-quick
+
+# API binary
+COPY --from=api-builder /awg-api /usr/bin/awg-api
+
+# Entrypoint handles token generation and env defaults
+COPY api/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 EXPOSE 8081/tcp
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+    CMD nc -z localhost ${API_PORT:-8081}
+
+ENTRYPOINT ["/entrypoint.sh"]

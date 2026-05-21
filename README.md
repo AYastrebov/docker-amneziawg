@@ -182,17 +182,29 @@ ports:
   - 32948:51820/udp  # NOT 32948:32948/udp
 ```
 
-## REST API
+## REST API (optional sidecar)
 
-Set `USE_API=true` to expose a REST API for reading peer configs, downloading QR codes, and watching tunnel stats. The token is auto-generated on first run and saved to `/config/server/api_token`. Swagger UI is at `/swagger/index.html`.
+Add the `awg-api` sidecar container for a REST API with peer management, live tunnel stats, and Swagger UI. The API token is auto-generated on first run and saved to `/config/server/api_token`.
 
 See [API.md](API.md) for endpoints and examples.
 
 ```yaml
-environment:
-  - USE_API=true
-ports:
-  - 8081:8081/tcp
+services:
+  amneziawg:
+    image: ghcr.io/ayastrebov/docker-amneziawg:latest
+    # ... (existing config)
+    ports:
+      - 51820:51820/udp
+      - 8081:8081/tcp          # API port (published here, used by sidecar)
+
+  awg-api:
+    image: ghcr.io/ayastrebov/awg-api:latest
+    network_mode: service:amneziawg
+    depends_on: [amneziawg]
+    volumes:
+      - ./config:/config
+    environment:
+      - WAIT_FOR_CONFIG=true
 ```
 
 ## Show Peer QR Codes

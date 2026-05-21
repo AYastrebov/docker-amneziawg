@@ -30,6 +30,7 @@ done
 
 if [[ -z "${FAILED}" ]]; then
     declare -p AWG_CONFS > /run/activeconfs
+    declare -p AWG_CONFS > /config/server/activeconfs
     echo "**** All tunnels are now active ****"
 else
     echo "**** Tunnel ${FAILED} failed, will stop all others! ****"

@@ -23,6 +23,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  API_IMAGE_NAME: ayastrebov/awg-api
   DOCKER_BUILDKIT: 1
   # Default upstream versions — overridden by workflow_dispatch inputs or external trigger
   AMNEZIAWG_GO_VERSION: v0.2.16
@@ -72,40 +73,48 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for Docker
+      # --- VPN image metadata ---
+      - name: Extract metadata (tags, labels) for VPN image
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # Set latest tag for default branch
             type=raw,value=latest,enable={{is_default_branch}}
-            # Tag with upstream amneziawg-tools version (e.g., 1.0.20260223)
             type=raw,value=${{ steps.versions.outputs.tools_version }},enable={{is_default_branch}}
-            # Tag with branch name
             type=ref,event=branch
-            # Tag with PR number
             type=ref,event=pr
-            # Tag with git tag (v1.0.0 -> 1.0.0)
             type=semver,pattern={{version}}
-            # Tag with major.minor (v1.0.0 -> 1.0)
             type=semver,pattern={{major}}.{{minor}}
-            # Tag with major (v1.0.0 -> 1)
             type=semver,pattern={{major}}
-            # Tag with short sha
             type=sha,prefix=sha-
 
-      - name: Build and push
+      # --- API sidecar image metadata ---
+      - name: Extract metadata (tags, labels) for API image
+        id: api-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.API_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha,prefix=sha-
+
+      # --- Build & push VPN image ---
+      - name: Build and push VPN image
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: runtime
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ github.workflow }}
-          cache-to: type=gha,mode=max,scope=${{ github.workflow }}
+          cache-from: type=gha,scope=vpn
+          cache-to: type=gha,mode=max,scope=vpn
           build-args: |
             BUILD_DATE=${{ github.event.repository.updated_at }}
             VERSION=${{ steps.versions.outputs.tools_version }}
@@ -115,30 +124,55 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: Test image (PR only)
+      # --- Build & push API sidecar image ---
+      - name: Build and push API image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: awg-api
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.api-meta.outputs.tags }}
+          labels: ${{ steps.api-meta.outputs.labels }}
+          cache-from: type=gha,scope=awg-api
+          cache-to: type=gha,mode=max,scope=awg-api
+          build-args: |
+            AMNEZIAWG_TOOLS_VERSION=${{ steps.versions.outputs.amneziawg_tools }}
+            BUILDKIT_INLINE_CACHE=1
+          provenance: false
+          sbom: false
+
+      # --- PR smoke tests ---
+      - name: Test VPN image (PR only)
         if: github.event_name == 'pull_request'
         run: |
-          # Build for local testing (single platform)
+          # Build VPN image for local testing (single platform)
           docker buildx build --platform linux/amd64 --load -t test-image \
+            --target runtime \
             --build-arg AMNEZIAWG_GO_VERSION=${{ steps.versions.outputs.amneziawg_go }} \
             --build-arg AMNEZIAWG_TOOLS_VERSION=${{ steps.versions.outputs.amneziawg_tools }} \
             .
 
-          echo "## Smoke tests" >> "$GITHUB_STEP_SUMMARY"
+          echo "## VPN image smoke tests" >> "$GITHUB_STEP_SUMMARY"
 
-          # Check binaries exist
+          # Check binaries exist (no awg-api — it's in the sidecar now)
           echo "### Binary check" >> "$GITHUB_STEP_SUMMARY"
-          docker run --rm test-image ls -la /usr/bin/awg /usr/bin/awg-quick /usr/bin/amneziawg-go /usr/bin/wg /usr/bin/wg-quick /usr/bin/awg-api
+          docker run --rm test-image ls -la /usr/bin/awg /usr/bin/awg-quick /usr/bin/amneziawg-go /usr/bin/wg /usr/bin/wg-quick
           echo "- Binaries present" >> "$GITHUB_STEP_SUMMARY"
 
-          # Check s6-overlay structure (all 4 services + branding)
+          # Verify awg-api is NOT in the VPN image
+          docker run --rm test-image sh -c '! test -f /usr/bin/awg-api && echo "awg-api: correctly absent"'
+          echo "- awg-api correctly absent from VPN image" >> "$GITHUB_STEP_SUMMARY"
+
+          # Check s6-overlay structure
           echo "### s6-overlay structure" >> "$GITHUB_STEP_SUMMARY"
           docker run --rm test-image sh -c '
             test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-module/type && echo "init-amneziawg-module: OK"
             test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/type && echo "init-amneziawg-confs: OK"
             test -f /etc/s6-overlay/s6-rc.d/svc-coredns/type && echo "svc-coredns: OK"
             test -f /etc/s6-overlay/s6-rc.d/svc-amneziawg/type && echo "svc-amneziawg: OK"
-            test -f /etc/s6-overlay/s6-rc.d/svc-awg-api/type && echo "svc-awg-api: OK"
+            ! test -d /etc/s6-overlay/s6-rc.d/svc-awg-api && echo "svc-awg-api: correctly absent"
             test -f /etc/s6-overlay/s6-rc.d/init-adduser/branding && echo "branding: OK"
           '
           echo "- All services registered" >> "$GITHUB_STEP_SUMMARY"
@@ -150,7 +184,6 @@ jobs:
             echo "init-amneziawg-confs: $(cat /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/type)"
             echo "svc-coredns: $(cat /etc/s6-overlay/s6-rc.d/svc-coredns/type)"
             echo "svc-amneziawg: $(cat /etc/s6-overlay/s6-rc.d/svc-amneziawg/type)"
-            echo "svc-awg-api: $(cat /etc/s6-overlay/s6-rc.d/svc-awg-api/type)"
           '
           echo "- Service types verified" >> "$GITHUB_STEP_SUMMARY"
 
@@ -161,7 +194,6 @@ jobs:
             test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/dependencies.d/init-amneziawg-module && echo "confs depends on module: OK"
             test -f /etc/s6-overlay/s6-rc.d/svc-coredns/dependencies.d/init-services && echo "coredns depends on init-services: OK"
             test -f /etc/s6-overlay/s6-rc.d/svc-amneziawg/dependencies.d/svc-coredns && echo "amneziawg depends on coredns: OK"
-            test -f /etc/s6-overlay/s6-rc.d/svc-awg-api/dependencies.d/svc-amneziawg && echo "awg-api depends on amneziawg: OK"
           '
           echo "- Dependency chain correct" >> "$GITHUB_STEP_SUMMARY"
 
@@ -169,7 +201,6 @@ jobs:
           echo "### Scripts and defaults" >> "$GITHUB_STEP_SUMMARY"
           docker run --rm test-image sh -c '
             test -x /app/show-peer && echo "show-peer: executable"
-            test -x /usr/bin/awg-api && echo "awg-api: executable"
             test -f /defaults/server.conf && echo "server.conf template: present"
             test -f /defaults/peer.conf && echo "peer.conf template: present"
             test -f /defaults/Corefile && echo "Corefile: present"
@@ -182,5 +213,27 @@ jobs:
           docker run --rm test-image which coredns
           echo "- CoreDNS binary present" >> "$GITHUB_STEP_SUMMARY"
 
-          echo "All smoke tests passed!" >> "$GITHUB_STEP_SUMMARY"
-          echo "Smoke tests passed!"
+          echo "VPN smoke tests passed!" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test API sidecar image (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          # Build API sidecar image
+          docker buildx build --platform linux/amd64 --load -t test-api-image \
+            --target awg-api \
+            --build-arg AMNEZIAWG_TOOLS_VERSION=${{ steps.versions.outputs.amneziawg_tools }} \
+            .
+
+          echo "## API sidecar smoke tests" >> "$GITHUB_STEP_SUMMARY"
+
+          docker run --rm test-api-image sh -c '
+            test -x /usr/bin/awg && echo "awg: executable"
+            test -x /usr/bin/awg-quick && echo "awg-quick: executable"
+            test -x /usr/bin/awg-api && echo "awg-api: executable"
+            test -x /entrypoint.sh && echo "entrypoint: executable"
+            ! test -d /etc/s6-overlay && echo "s6-overlay: correctly absent"
+          '
+          echo "- API sidecar binaries present" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "API sidecar smoke tests passed!" >> "$GITHUB_STEP_SUMMARY"
+          echo "All smoke tests passed!"

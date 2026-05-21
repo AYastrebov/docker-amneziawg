@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -31,8 +32,16 @@ type PeerStat struct {
 	TransferTx      int64  `json:"transfer_tx"`
 }
 
-// awgBinary is the path to the awg command. Hardcoded to prevent PATH manipulation.
+// awgBinary is the path to the awg command. Defaults to a fixed path to
+// prevent PATH manipulation; overridable via AWG_BINARY_PATH for sidecar
+// deployments where awg lives at a different location.
 var awgBinary = "/usr/bin/awg"
+
+func init() {
+	if v := os.Getenv("AWG_BINARY_PATH"); v != "" {
+		awgBinary = v
+	}
+}
 
 // getTunnelStatsFunc can be replaced in tests to avoid calling the real `awg` binary.
 var getTunnelStatsFunc = getTunnelStatsReal
