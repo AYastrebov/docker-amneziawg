@@ -1,5 +1,3 @@
-version: "2"
-
 run:
   timeout: 5m
   tests: true
@@ -17,36 +15,32 @@ linters:
     - bodyclose
     - prealloc
     - unconvert
-    - copyloopvar
     - nilerr
-  settings:
-    gocritic:
-      enabled-tags:
-        - diagnostic
-        - performance
-        - style
-      disabled-checks:
-        - ifElseChain
-        - hugeParam
-        - unnamedResult
-        - unnecessaryBlock
-    revive:
-      rules:
-        - name: var-naming
-        - name: package-comments
-        - name: exported
-          disabled: true
-        - name: unused-parameter
-          disabled: true
-  exclusions:
-    rules:
-      - path: _test\.go
-        linters:
-          - errcheck
-          - gocritic
-          - bodyclose
 
-formatters:
-  enable:
-    - gofmt
-    - goimports
+linters-settings:
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+    disabled-checks:
+      - ifElseChain
+      - hugeParam
+      - unnamedResult
+      - unnecessaryBlock
+  revive:
+    rules:
+      - name: var-naming
+      - name: package-comments
+      - name: exported
+        disabled: true
+      - name: unused-parameter
+        disabled: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gocritic
+        - bodyclose
