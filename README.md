@@ -121,12 +121,12 @@ docker run -d \
 
 | Parameter | Function |
 |-----------|----------|
-| `-p 51820:51820/udp` | WireGuard port |
+| `-p 51820:51820/udp` | Server WireGuard port (internal). Map to any external port via Docker |
 | `-e PUID=1000` | User ID for file ownership |
 | `-e PGID=1000` | Group ID for file ownership |
 | `-e TZ=Etc/UTC` | Timezone ([list](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List)) |
 | `-e SERVERURL=auto` | Server URL/IP for peer configs. `auto` detects external IP |
-| `-e SERVERPORT=51820` | Port advertised to peers. Use ≤ 9999 if your ISP blocks high UDP ports |
+| `-e SERVERPORT=51820` | Port advertised to peers AND used by peers to listen. Server always listens on 51820 internally; use Docker port mapping for external ports (e.g., `-p 443:51820/udp` with `SERVERPORT=443`) |
 | `-e PEERS=3` | Number or comma-separated names (`laptop,phone`). Enables server mode |
 | `-e PEERDNS=auto` | DNS for peers. `auto` = container's CoreDNS at subnet.1 |
 | `-e INTERNAL_SUBNET=10.13.13.0` | VPN subnet (.1 = server, .2+ = peers) |
