@@ -16,6 +16,8 @@ concurrency:
 permissions:
   contents: write
   packages: write
+  pull-requests: write
+  actions: write
 
 env:
   TOOLS_REPO: amnezia-vpn/amneziawg-tools
