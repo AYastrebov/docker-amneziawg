@@ -2,7 +2,7 @@ name: Check Upstream Releases
 
 # Check for new amneziawg-tools and amneziawg-go releases daily.
 # If a new version is found, update the pinned versions in the Dockerfile
-# and trigger a rebuild.
+# and open a pull request. The docker-build workflow runs on merge.
 
 on:
   schedule:
@@ -15,9 +15,7 @@ concurrency:
 
 permissions:
   contents: write
-  packages: write
   pull-requests: write
-  actions: write
 
 env:
   TOOLS_REPO: amnezia-vpn/amneziawg-tools
@@ -91,7 +89,7 @@ jobs:
           echo "tools_changed=${TOOLS_CHANGED}" >> "$GITHUB_OUTPUT"
           echo "go_changed=${GO_CHANGED}" >> "$GITHUB_OUTPUT"
 
-  update-and-build:
+  open-pr:
     needs: check-upstream
     if: needs.check-upstream.outputs.tools_changed == 'true' || needs.check-upstream.outputs.go_changed == 'true'
     runs-on: ubuntu-latest
@@ -134,11 +132,4 @@ jobs:
           delete-branch: true
           sign-commits: true
 
-      - name: Trigger build workflow
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run docker-build.yml \
-            -f amneziawg_go_version=${{ needs.check-upstream.outputs.new_go_version }} \
-            -f amneziawg_tools_version=${{ needs.check-upstream.outputs.new_tools_version }}
-          echo "Triggered build with updated versions" >> "$GITHUB_STEP_SUMMARY"
+
