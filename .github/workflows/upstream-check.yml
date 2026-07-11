@@ -16,6 +16,8 @@ concurrency:
 permissions:
   contents: write
   packages: write
+  pull-requests: write
+  actions: write
 
 env:
   TOOLS_REPO: amnezia-vpn/amneziawg-tools
@@ -113,26 +115,27 @@ jobs:
             echo "Updated AMNEZIAWG_GO_VERSION to ${{ needs.check-upstream.outputs.new_go_version }}"
           fi
 
-      - name: Commit version bump
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Create Pull Request
+        id: create-pr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ github.token }}
+          commit-message: |
+            chore: bump upstream versions
 
-          TOOLS_VER="${{ needs.check-upstream.outputs.new_tools_version }}"
-          GO_VER="${{ needs.check-upstream.outputs.new_go_version }}"
+            - amneziawg-tools: ${{ needs.check-upstream.outputs.new_tools_version }}
+            - amneziawg-go: ${{ needs.check-upstream.outputs.new_go_version }}
+          title: "chore: bump upstream versions"
+          body: |
+            Automated bump of pinned upstream versions.
 
-          COMMIT_MSG="chore: bump upstream versions"
-          BODY=""
-          if [[ "${{ needs.check-upstream.outputs.tools_changed }}" == "true" ]]; then
-            BODY="${BODY}"$'\n'"- amneziawg-tools: ${TOOLS_VER}"
-          fi
-          if [[ "${{ needs.check-upstream.outputs.go_changed }}" == "true" ]]; then
-            BODY="${BODY}"$'\n'"- amneziawg-go: ${GO_VER}"
-          fi
+            - amneziawg-tools: ${{ needs.check-upstream.outputs.new_tools_version }}
+            - amneziawg-go: ${{ needs.check-upstream.outputs.new_go_version }}
 
-          git add Dockerfile
-          git commit -m "${COMMIT_MSG}" -m "${BODY}"
-          git push
+            > **Note:** Merge this PR using **Squash** or **Rebase** to keep `master` linear.
+          branch: chore/bump-upstream-versions
+          delete-branch: true
+          sign-commits: true
 
       - name: Trigger build workflow
         env:
