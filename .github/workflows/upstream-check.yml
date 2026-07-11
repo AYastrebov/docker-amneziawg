@@ -95,9 +95,6 @@ jobs:
     needs: check-upstream
     if: needs.check-upstream.outputs.tools_changed == 'true' || needs.check-upstream.outputs.go_changed == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
 
     steps:
       - name: Checkout code
