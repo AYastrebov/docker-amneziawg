@@ -31,7 +31,7 @@ services:
       # ---- Server Mode Configuration ----
       # Uncomment and configure for server mode
       # - SERVERURL=auto                    # External URL/IP (or 'auto' to detect)
-      # - SERVERPORT=51820                  # Port advertised to peers and used by peers' ListenPort
+      # - SERVERPORT=51820                  # Listen port
       # - PEERS=3                           # Number or names: 3 or laptop,phone,tablet
       # - PEERDNS=auto                      # DNS for peers (or specific: 8.8.8.8, 8.8.4.4)
       # - INTERNAL_SUBNET=10.13.13.0        # VPN subnet
@@ -79,8 +79,6 @@ services:
       # - USE_COREDNS=true                  # Enable CoreDNS (auto in server mode)
     volumes:
       - ./config:/config
-    # Port mapping: external:internal. Server always listens on 51820 internally.
-    # Map any external port to 51820 (e.g., 443:51820/udp). Set SERVERPORT to the external port.
     ports:
       - 51820:51820/udp
     sysctls:
@@ -90,7 +88,7 @@ services:
     restart: unless-stopped
 
 # ============================================================================
-# Example: Server Mode with 3 peers (default port 51820)
+# Example: Server Mode with 3 peers
 # ============================================================================
 # services:
 #   amneziawg:
@@ -115,33 +113,6 @@ services:
 #       - ./config:/config
 #     ports:
 #       - 51820:51820/udp
-#     sysctls:
-#       - net.ipv4.ip_forward=1
-#       - net.ipv4.conf.all.src_valid_mark=1
-#     restart: unless-stopped
-#
-# ============================================================================
-# Example: Server Mode with custom port (443)
-# ============================================================================
-# Server listens on 51820 internally, but peers connect to 443 externally
-# services:
-#   amneziawg:
-#     image: ghcr.io/ayastrebov/docker-amneziawg:latest
-#     container_name: amneziawg
-#     cap_add:
-#       - NET_ADMIN
-#     environment:
-#       - PUID=1000
-#       - PGID=1000
-#       - TZ=Etc/UTC
-#       - SERVERURL=vpn.example.com
-#       - SERVERPORT=443          # Peers will connect to port 443 and listen on 443
-#       - PEERS=3
-#       - PEERDNS=auto
-#     volumes:
-#       - ./config:/config
-#     ports:
-#       - 443:51820/udp            # Map external 443 to internal 51820
 #     sysctls:
 #       - net.ipv4.ip_forward=1
 #       - net.ipv4.conf.all.src_valid_mark=1
