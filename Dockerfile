@@ -10,7 +10,7 @@ ARG AMNEZIAWG_TOOLS_VERSION=v1.0.20260618-2
 # ============================================================================
 # Stage 1: Compile amneziawg-go
 # ============================================================================
-FROM golang:1.24.4-alpine AS go-builder
+FROM golang:1.25.12-alpine AS go-builder
 
 ARG AMNEZIAWG_GO_VERSION
 RUN apk add --no-cache git build-base

@@ -35,7 +35,7 @@ There is no automated test suite. CI runs smoke tests on PRs: binary presence, s
 
 | Stage | Base | Output |
 |---|---|---|
-| `go-builder` | `golang:1.24.4-alpine` | `/src/amneziawg-go` (static binary, CGO) |
+| `go-builder` | `golang:1.25.12-alpine` | `/src/amneziawg-go` (static binary, CGO) |
 | `tools-builder` | `alpine:3.21` | `/usr/bin/awg` (compiled C) + `/usr/bin/awg-quick` (bash script copied from `src/wg-quick/linux.bash`) |
 | runtime | `ghcr.io/linuxserver/baseimage-alpine:3.21` | Production image |
 
