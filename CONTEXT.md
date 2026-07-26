@@ -9,8 +9,8 @@ This document provides deep technical context for AI agents working on or answer
 | Stage | Base | Output |
 |---|---|---|
 | `go-builder` | `golang:1.24.4-alpine` | `/src/amneziawg-go` (static binary, CGO) |
-| `tools-builder` | `alpine:3.21` | `/usr/bin/awg` (compiled C) + `/usr/bin/awg-quick` (bash script from `src/wg-quick/linux.bash`) |
-| runtime | `ghcr.io/linuxserver/baseimage-alpine:3.21` | Production image |
+| `tools-builder` | `alpine:3.24` | `/usr/bin/awg` (compiled C) + `/usr/bin/awg-quick` (bash script from `src/wg-quick/linux.bash`) |
+| runtime | `ghcr.io/linuxserver/baseimage-alpine:3.24` | Production image |
 
 Runtime creates compatibility symlinks: `wg` -> `awg`, `wg-quick` -> `awg-quick`, `/etc/wireguard` -> `/config/wg_confs`.
 

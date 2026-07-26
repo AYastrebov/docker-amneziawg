@@ -10,7 +10,7 @@ ARG AMNEZIAWG_TOOLS_VERSION=v1.0.20260618-2
 # ============================================================================
 # Stage 1: Compile amneziawg-go
 # ============================================================================
-FROM golang:1.24.4-alpine AS go-builder
+FROM golang:1.25.12-alpine AS go-builder
 
 ARG AMNEZIAWG_GO_VERSION
 RUN apk add --no-cache git build-base
@@ -22,7 +22,7 @@ RUN CGO_ENABLED=1 go build -ldflags '-linkmode external -extldflags "-fno-PIC -s
 # ============================================================================
 # Stage 2: Compile awg-tools from source
 # ============================================================================
-FROM alpine:3.21 AS tools-builder
+FROM alpine:3.24 AS tools-builder
 
 ARG AMNEZIAWG_TOOLS_VERSION
 RUN apk add --no-cache git build-base linux-headers bash
@@ -40,7 +40,7 @@ RUN make && \
 # ============================================================================
 # Stage 3: Runtime image using LinuxServer base
 # ============================================================================
-FROM ghcr.io/linuxserver/baseimage-alpine:3.21
+FROM ghcr.io/linuxserver/baseimage-alpine:3.24
 
 # set version label
 ARG BUILD_DATE
