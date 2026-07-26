@@ -4,7 +4,7 @@
 # Multi-stage build: compile amneziawg-go, awg-tools, then create runtime image
 
 # Upstream version defaults — override via --build-arg or CI
-ARG AMNEZIAWG_GO_VERSION=v0.2.19
+ARG AMNEZIAWG_GO_VERSION=v3.0.1
 ARG AMNEZIAWG_TOOLS_VERSION=v1.0.20260618-2
 
 # ============================================================================
