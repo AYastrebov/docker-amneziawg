@@ -24,9 +24,8 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   DOCKER_BUILDKIT: 1
-  # Default upstream versions — overridden by workflow_dispatch inputs or external trigger
-  AMNEZIAWG_GO_VERSION: v0.2.16
-  AMNEZIAWG_TOOLS_VERSION: v1.0.20260223
+  # Upstream versions are read from the Dockerfile ARG pins (single source of truth).
+  # workflow_dispatch inputs override them for one-off builds.
 
 jobs:
   build:
@@ -42,9 +41,19 @@ jobs:
       - name: Resolve upstream versions
         id: versions
         run: |
-          # Use workflow_dispatch inputs if provided, otherwise env defaults
-          AWG_GO="${{ github.event.inputs.amneziawg_go_version || env.AMNEZIAWG_GO_VERSION }}"
-          AWG_TOOLS="${{ github.event.inputs.amneziawg_tools_version || env.AMNEZIAWG_TOOLS_VERSION }}"
+          # workflow_dispatch inputs take precedence; otherwise read the pins from the Dockerfile
+          AWG_GO="${{ github.event.inputs.amneziawg_go_version }}"
+          AWG_TOOLS="${{ github.event.inputs.amneziawg_tools_version }}"
+          if [[ -z "$AWG_GO" ]]; then
+            AWG_GO=$(grep '^ARG AMNEZIAWG_GO_VERSION=' Dockerfile | cut -d= -f2)
+          fi
+          if [[ -z "$AWG_TOOLS" ]]; then
+            AWG_TOOLS=$(grep '^ARG AMNEZIAWG_TOOLS_VERSION=' Dockerfile | cut -d= -f2)
+          fi
+          if [[ -z "$AWG_GO" || -z "$AWG_TOOLS" ]]; then
+            echo "::error::Could not resolve upstream versions (go: '${AWG_GO}', tools: '${AWG_TOOLS}')"
+            exit 1
+          fi
           echo "amneziawg_go=${AWG_GO}" >> "$GITHUB_OUTPUT"
           echo "amneziawg_tools=${AWG_TOOLS}" >> "$GITHUB_OUTPUT"
           # Strip 'v' prefix for version label (v1.0.20260223 -> 1.0.20260223)
@@ -180,3 +189,48 @@ jobs:
 
           echo "All smoke tests passed!" >> "$GITHUB_STEP_SUMMARY"
           echo "Smoke tests passed!"
+
+  release:
+    needs: build
+    # Only on merges to the default branch — not on PRs, tags, or manual dispatch
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release for new upstream version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TOOLS_VERSION=$(grep '^ARG AMNEZIAWG_TOOLS_VERSION=' Dockerfile | cut -d= -f2)
+          GO_VERSION=$(grep '^ARG AMNEZIAWG_GO_VERSION=' Dockerfile | cut -d= -f2)
+          TAG="${TOOLS_VERSION}"  # already carries the v prefix
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release ${TAG} already exists — nothing to do."
+            exit 0
+          fi
+
+          cat > release-notes.md <<EOF
+          ## AmneziaWG Docker Container ${TAG}
+
+          ### Upstream versions
+          - **amneziawg-tools**: ${TOOLS_VERSION}
+          - **amneziawg-go**: ${GO_VERSION}
+
+          ### Docker image
+
+          \`\`\`bash
+          docker pull ${IMAGE}:latest
+          # or pin to this version:
+          docker pull ${IMAGE}:${TAG#v}
+          \`\`\`
+          EOF
+
+          gh release create "$TAG" --title "$TAG" --notes-file release-notes.md
+          echo "Created release ${TAG}" >> "$GITHUB_STEP_SUMMARY"
