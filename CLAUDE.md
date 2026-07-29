@@ -35,9 +35,9 @@ There is no automated test suite. CI runs smoke tests on PRs: binary presence, s
 
 | Stage | Base | Output |
 |---|---|---|
-| `go-builder` | `golang:1.24.4-alpine` | `/src/amneziawg-go` (static binary, CGO) |
-| `tools-builder` | `alpine:3.21` | `/usr/bin/awg` (compiled C) + `/usr/bin/awg-quick` (bash script copied from `src/wg-quick/linux.bash`) |
-| runtime | `ghcr.io/linuxserver/baseimage-alpine:3.21` | Production image |
+| `go-builder` | `golang:1.25.12-alpine` | `/src/amneziawg-go` (static binary, CGO) |
+| `tools-builder` | `alpine:3.24` | `/usr/bin/awg` (compiled C) + `/usr/bin/awg-quick` (bash script copied from `src/wg-quick/linux.bash`) |
+| runtime | `ghcr.io/linuxserver/baseimage-alpine:3.24` | Production image |
 
 Runtime creates compatibility symlinks: `wg → awg`, `wg-quick → awg-quick`, `/etc/wireguard → /config/wg_confs`.
 
@@ -94,14 +94,14 @@ All clients and server must use identical values. Key constraints:
 ### Workflows
 
 **`docker-build.yml`** — main build pipeline:
-- Push to `master`/`main` → builds multi-arch (`amd64`, `arm64`) and pushes to `ghcr.io/ayastrebov/docker-amneziawg:latest` + upstream tools version tag
+- Push to `master`/`main` → builds multi-arch (`amd64`, `arm64`) and pushes to `ghcr.io/ayastrebov/docker-amneziawg:latest` + upstream tools version tag, then creates a GitHub Release tagged with the tools version (skipped if the release already exists)
 - `v*` tags → semantic version tags (`1.0.0`, `1.0`, `1`)
 - PRs → smoke tests only (single-platform `--load` build, no multi-arch QEMU): binaries, s6 structure, service types, dependency chain, CoreDNS, branding
-- `workflow_dispatch` accepts `amneziawg_go_version` and `amneziawg_tools_version` overrides
+- Upstream versions are read from the Dockerfile `ARG` pins (single source of truth); `workflow_dispatch` accepts `amneziawg_go_version` and `amneziawg_tools_version` overrides for one-off builds
 
 **`upstream-check.yml`** — daily upstream version check (06:00 UTC):
 - Compares `ARG` defaults in Dockerfile against latest amneziawg-tools and amneziawg-go releases
-- If new version detected: updates Dockerfile, commits, triggers build workflow
+- If new version detected: updates Dockerfile and opens a pull request; the build workflow runs on merge
 
 ### Versioning
 
