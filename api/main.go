@@ -63,10 +63,10 @@ func main() {
 	// Health check — no auth
 	r.GET("/health", handleHealth)
 
-	// Swagger UI is opt-out via API_SWAGGER. Defaults to enabled for
-	// backward compatibility, but production deployments behind a public
-	// reverse proxy will want API_SWAGGER=false to avoid leaking the API
-	// surface to unauthenticated callers.
+	// Swagger UI is opt-in via API_SWAGGER (default off). It is mounted
+	// outside the authenticated route group, so keeping it off by default
+	// avoids leaking the API surface to unauthenticated callers behind a
+	// public reverse proxy. Set API_SWAGGER=true to enable it.
 	if swaggerEnabled() {
 		r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	}

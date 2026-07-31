@@ -44,7 +44,8 @@ RUN make && \
 # ============================================================================
 FROM golang:1.25.12-alpine AS api-builder
 
-RUN go install github.com/swaggo/swag/cmd/swag@latest
+# Pinned to match github.com/swaggo/swag in api/go.mod for reproducible builds
+RUN go install github.com/swaggo/swag/cmd/swag@v1.16.4
 WORKDIR /src/api
 COPY api/go.mod api/go.sum ./
 RUN go mod download
