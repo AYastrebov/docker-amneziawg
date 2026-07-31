@@ -16,8 +16,9 @@ if [ -z "$API_TOKEN" ]; then
     else
         API_TOKEN=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
         mkdir -p "$CONFIG_DIR/server"
-        printf '%s' "$API_TOKEN" > "$CONFIG_DIR/server/api_token"
-        chmod 600 "$CONFIG_DIR/server/api_token"
+        # Create with the restrictive mode already in place — chmod after the
+        # write leaves the token world-readable in between.
+        (umask 077; printf '%s' "$API_TOKEN" > "$CONFIG_DIR/server/api_token")
         echo "API token generated: $API_TOKEN"
         echo "Save this token — it will not be shown again"
     fi
