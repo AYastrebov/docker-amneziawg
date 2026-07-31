@@ -60,10 +60,10 @@ FROM alpine:3.24 AS awg-api
 
 RUN apk add --no-cache ca-certificates netcat-openbsd bash
 
-# awg + awg-quick for tunnel stats
+# awg is the kernel-mode fallback for tunnel stats. Userspace tunnels are read
+# directly over the amneziawg-go UAPI socket, so awg-quick is not needed here.
 COPY --from=tools-builder /tools-install/usr/bin/awg /usr/bin/awg
-COPY --from=tools-builder /tools-install/usr/bin/awg-quick /usr/bin/awg-quick
-RUN chmod +x /usr/bin/awg /usr/bin/awg-quick
+RUN chmod +x /usr/bin/awg
 
 COPY --from=api-builder /awg-api /usr/bin/awg-api
 

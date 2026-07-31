@@ -62,14 +62,17 @@ Dependencies are declared via empty files in `dependencies.d/`. Services are reg
 
 ### API sidecar (`awg-api` image)
 
-The REST API runs as a separate container (`ghcr.io/ayastrebov/awg-api`), not inside the VPN container. It shares the VPN's network namespace via `network_mode: service:amneziawg` and the `/config` volume. It has its own entrypoint (`api/entrypoint.sh`) handling token generation and config wait. All file paths are env-driven (`CONFIG_DIR`, `ACTIVE_CONFS_PATH`, `BUILD_VERSION_PATH`, `S6_ENV_DIR`, `AWG_BINARY_PATH`) with sidecar-appropriate defaults.
+The REST API runs as a separate container (`ghcr.io/ayastrebov/awg-api`), not inside the VPN container. It shares the VPN's network namespace via `network_mode: service:amneziawg` and the `/config` volume. It has its own entrypoint (`api/entrypoint.sh`) handling token generation and config wait. All file paths are env-driven (`CONFIG_DIR`, `ACTIVE_CONFS_PATH`, `BUILD_VERSION_PATH`, `S6_ENV_DIR`, `AWG_BINARY_PATH`, `AWG_SOCKET_DIR`) with sidecar-appropriate defaults.
+
+Tunnel stats are read **UAPI-first**: `getTunnelStatsReal()` (`api/awg.go`) reads the amneziawg-go userspace UAPI socket (`/run/amneziawg/<iface>.sock`, `api/uapi.go` `ParseUAPIGet`) when any socket is present, and falls back to `awg show all dump` (`ParseAWGDump`) only for kernel-mode hosts (no socket). Both paths return identical `TunnelInfo`/`PeerStat` shapes behind the `getTunnelStatsFunc` seam. `awg-quick` is NOT in the sidecar image; `awg` remains solely as the kernel-mode fallback.
 
 Security invariants — do not regress these:
 - `readAWGParams()` in `api/config.go` uses an **allowlist**. Never restore pass-through: `/config/server/awg_params` contains `AWG_HEADER_PROTECTION_KEY`, a symmetric key shared with every client. New non-secret params need adding to `awgParamAllowlist` to become visible.
 - WebSocket auth reads the token from `Sec-WebSocket-Protocol` or `Authorization`. The `?token=` form is deprecated because gin logs raw query strings; the WS paths are in the logger's `SkipPaths` for that reason.
 - Swagger is opt-in (`API_SWAGGER=true`) because `/swagger/*` is mounted outside the authenticated route group.
-- `ParseAWGDump()` in `api/awg.go` must **never** switch on `len(fields)` to tell device lines from peer lines. AmneziaWG emits a 28-field device line on every protocol version (WireGuard emits 5), so the old `== 5` check silently made `/api/v1/tunnels` always return empty. Device lines are identified by being the first line for an interface with an integer listen port in field 3. Test fixtures must be real `awg show all dump` output, not WireGuard's.
-- The sidecar needs `/run/amneziawg` shared as a volume to read userspace tunnel stats: `awg show` uses that UNIX socket, and `network_mode: service:` shares only the network namespace. Kernel mode uses netlink and does not need it.
+- `ParseAWGDump()` in `api/awg.go` (the kernel-mode fallback) must **never** switch on `len(fields)` to tell device lines from peer lines. AmneziaWG emits a 28-field device line on every protocol version (WireGuard emits 5), so the old `== 5` check silently made `/api/v1/tunnels` always return empty. Device lines are identified by being the first line for an interface with an integer listen port in field 3. Test fixtures must be real `awg show all dump` output, not WireGuard's.
+- `ParseUAPIGet()` in `api/uapi.go` must **never** surface the secrets the UAPI `get=` stream carries — `private_key`, `preshared_key`, `header_protection_key`. The private key is touched only transiently to derive the interface public key (`curve25519`); the others are ignored. UAPI keys are hex on the wire but converted to base64 to match `awg show` and the on-disk keyfiles that `GetPeerDetail` compares against.
+- The sidecar needs `/run/amneziawg` shared as a volume to read userspace tunnel stats: it reads the `<iface>.sock` UAPI socket directly, and `network_mode: service:` shares only the network namespace. Kernel mode uses netlink (via the `awg` fallback) and does not need it.
 
 See `API.md` for endpoint docs and `DECOUPLING.md` for architecture rationale.
 

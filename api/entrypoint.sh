@@ -7,6 +7,10 @@ export ACTIVE_CONFS_PATH="${ACTIVE_CONFS_PATH:-/config/server/activeconfs}"
 export BUILD_VERSION_PATH="${BUILD_VERSION_PATH:-/config/server/build_version}"
 export S6_ENV_DIR="${S6_ENV_DIR:-/config/server/s6env}"
 export AWG_BINARY_PATH="${AWG_BINARY_PATH:-/usr/bin/awg}"
+# Userspace UAPI sockets (<iface>.sock) — the primary tunnel-stats source.
+# Shared from the VPN container via the awgrun volume; awg is only the
+# kernel-mode fallback.
+export AWG_SOCKET_DIR="${AWG_SOCKET_DIR:-/run/amneziawg}"
 export API_PORT="${API_PORT:-8081}"
 
 # --- Token management ---

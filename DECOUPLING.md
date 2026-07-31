@@ -246,5 +246,6 @@ No backward compatibility. The all-in-one mode is removed immediately.
 | Single Dockerfile or separate `api/Dockerfile`? | **Single** with `--target` | Avoids duplicating `tools-builder` stage. |
 | API image base: `alpine:3.24` or LSIO? | **`alpine:3.24`** | API doesn't need s6-overlay or init hooks. |
 | Include `awg-quick` in API image? | **No** (only `awg`) | Current API is read-only; `awg-quick` not used. |
+| How does the sidecar read tunnel stats? | **UAPI socket first, `awg show` fallback** | Userspace tunnels are read directly from `/run/amneziawg/<iface>.sock` (`api/uapi.go`) — no fork/exec and a self-describing `key=value` protocol instead of positional columns. Kernel-mode hosts expose no socket (the datapath is netlink), so `awg show all dump` remains as the fallback. Dropping `awg` entirely would require a native genetlink client for family `amneziawg` — a possible follow-up. |
 | `ACTIVE_CONFS_PATH` default: `/run/activeconfs` or `/config/server/activeconfs`? | **`/run/activeconfs`** (with `/config/server` fallback) | Keeps existing finish-script logic working inside the VPN container while sharing state with the sidecar. |
 | API versioning tied to base image? | **No** — independent semver | API evolves independently from upstream tools. |

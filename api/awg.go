@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -37,9 +38,18 @@ type PeerStat struct {
 // deployments where awg lives at a different location.
 var awgBinary = "/usr/bin/awg"
 
+// awgSocketDir holds the amneziawg-go UAPI sockets (one <iface>.sock per
+// userspace interface). Overridable via AWG_SOCKET_DIR. This is the primary
+// stats source; the awg CLI is only used as a fallback for kernel-mode
+// interfaces, which have no socket (see getTunnelStatsReal).
+var awgSocketDir = "/run/amneziawg"
+
 func init() {
 	if v := os.Getenv("AWG_BINARY_PATH"); v != "" {
 		awgBinary = v
+	}
+	if v := os.Getenv("AWG_SOCKET_DIR"); v != "" {
+		awgSocketDir = v
 	}
 }
 
@@ -52,7 +62,47 @@ func GetTunnelStats() ([]TunnelInfo, error) {
 	return getTunnelStatsFunc()
 }
 
-// getTunnelStatsReal parses the output of `awg show all dump`.
+// getTunnelStatsReal returns live tunnel stats, preferring the amneziawg-go
+// UAPI socket and falling back to the awg CLI.
+//
+// Userspace mode (the default): amneziawg-go exposes a <iface>.sock per
+// interface under awgSocketDir. Reading the UAPI get= stream avoids forking
+// awg and parses a self-describing key=value protocol instead of the
+// positional `awg show all dump` columns. If any socket is present we use the
+// UAPI exclusively.
+//
+// Kernel mode (host has a 3.0-capable amneziawg module): there is no socket —
+// the datapath is generic netlink — so awgSocketDir is empty and we fall back
+// to `awg show all dump`, which speaks netlink. A container uses a single
+// datapath (init-amneziawg-module picks one), so socket-present ⇒ userspace
+// for every interface. Zero sockets also covers the tunnels-down case, where
+// the CLI already returns an empty list.
+func getTunnelStatsReal() ([]TunnelInfo, error) {
+	ifaces, err := (UAPIClient{dir: awgSocketDir}).interfaces()
+	if err == nil && len(ifaces) > 0 {
+		return getTunnelStatsViaUAPI(ifaces)
+	}
+	return getTunnelStatsViaCLI()
+}
+
+// getTunnelStatsViaUAPI reads each interface's stats over its UAPI socket. A
+// single failing socket is logged and skipped rather than failing the whole
+// response, mirroring the CLI path's tolerance for tunnels being down.
+func getTunnelStatsViaUAPI(ifaces []string) ([]TunnelInfo, error) {
+	client := UAPIClient{dir: awgSocketDir}
+	tunnels := make([]TunnelInfo, 0, len(ifaces))
+	for _, iface := range ifaces {
+		t, err := client.get(iface)
+		if err != nil {
+			slog.Warn("uapi: reading interface stats failed, skipping", "iface", iface, "err", err)
+			continue
+		}
+		tunnels = append(tunnels, *t)
+	}
+	return tunnels, nil
+}
+
+// getTunnelStatsViaCLI parses the output of `awg show all dump`.
 //
 // The dump format is tab-separated. `awg show all dump` prints one device line
 // per interface, immediately followed by that interface's peer lines:
@@ -66,7 +116,7 @@ func GetTunnelStats() ([]TunnelInfo, error) {
 // every protocol version, since unset values are emitted as `(null)`, `(none)`
 // or `0` rather than omitted. Line type is therefore determined by position,
 // never by field count.
-func getTunnelStatsReal() ([]TunnelInfo, error) {
+func getTunnelStatsViaCLI() ([]TunnelInfo, error) {
 	out, err := exec.Command(awgBinary, "show", "all", "dump").Output()
 	if err != nil {
 		// Tunnels may be down — return empty list instead of error
