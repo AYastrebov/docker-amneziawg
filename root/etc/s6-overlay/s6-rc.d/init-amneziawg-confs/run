@@ -303,12 +303,13 @@ append_awg_signatures() {
 }
 
 # Insert I1-I5 into [Interface] section of a peer conf (before the [Peer] line).
-# For AWG 2.0, I2-I5 are always written (even empty) so the Amnezia app detects AWG 2.0.
+# For AWG 2.0/3.0, I2-I5 are always written (even empty) so the Amnezia app
+# detects AWG 2.0+ rather than falling back to reporting 1.5.
 append_awg_signatures_to_interface() {
     local conf_file=$1
     local sig_block=""
     [[ -n "$AWG_I1" ]] && sig_block+="I1 = ${AWG_I1}"$'\n'
-    if [[ "${AWG_VERSION}" == "2.0" ]]; then
+    if [[ "${AWG_VERSION}" == "2.0" || "${AWG_VERSION}" == "3.0" ]]; then
         sig_block+="I2 = ${AWG_I2}"$'\n'
         sig_block+="I3 = ${AWG_I3}"$'\n'
         sig_block+="I4 = ${AWG_I4}"$'\n'
@@ -320,6 +321,40 @@ append_awg_signatures_to_interface() {
         [[ -n "$AWG_I5" ]] && sig_block+="I5 = ${AWG_I5}"$'\n'
     fi
     [[ -z "$sig_block" ]] && return 0
+    local tmp
+    tmp=$(awk -v block="$sig_block" '
+        /^\[Peer\]/ && !done { printf "%s", block; done=1 }
+        { print }
+    ' "$conf_file")
+    printf '%s\n' "$tmp" > "$conf_file"
+}
+
+# Append AWG 3.0 params to the server conf (called before any [Peer] section exists)
+append_awg3_params() {
+    local conf_file=$1
+    [[ "${AWG_VERSION}" != "3.0" ]] && return 0
+    cat >> "$conf_file" <<EOF
+HeaderProtectionKey = ${AWG_HEADER_PROTECTION_KEY}
+ContentPaddingAddition = ${AWG_CONTENT_PADDING}
+RekeyAfterTime = ${AWG_REKEY_AFTER_TIME}
+RekeyTimeout = ${AWG_REKEY_TIMEOUT}
+RejectAfterTime = ${AWG_REJECT_AFTER_TIME}
+KeepaliveTimeout = ${AWG_KEEPALIVE_TIMEOUT}
+MaxHandshakeAttempts = ${AWG_MAX_HANDSHAKE_ATTEMPTS}
+EOF
+}
+
+# Insert AWG 3.0 params into the [Interface] section of a peer conf (before the [Peer] line)
+append_awg3_params_to_interface() {
+    local conf_file=$1
+    [[ "${AWG_VERSION}" != "3.0" ]] && return 0
+    local sig_block="HeaderProtectionKey = ${AWG_HEADER_PROTECTION_KEY}"$'\n'
+    sig_block+="ContentPaddingAddition = ${AWG_CONTENT_PADDING}"$'\n'
+    sig_block+="RekeyAfterTime = ${AWG_REKEY_AFTER_TIME}"$'\n'
+    sig_block+="RekeyTimeout = ${AWG_REKEY_TIMEOUT}"$'\n'
+    sig_block+="RejectAfterTime = ${AWG_REJECT_AFTER_TIME}"$'\n'
+    sig_block+="KeepaliveTimeout = ${AWG_KEEPALIVE_TIMEOUT}"$'\n'
+    sig_block+="MaxHandshakeAttempts = ${AWG_MAX_HANDSHAKE_ATTEMPTS}"$'\n'
     local tmp
     tmp=$(awk -v block="$sig_block" '
         /^\[Peer\]/ && !done { printf "%s", block; done=1 }
@@ -345,6 +380,8 @@ $(cat /config/templates/server.conf)
 DUDE"
     # Append I1-I5 signature packets to server conf
     append_awg_signatures /config/wg_confs/wg0.conf
+    # Append AWG 3.0 params to server conf (no-op unless AWG_VERSION=3.0)
+    append_awg3_params /config/wg_confs/wg0.conf
     for i in "${PEERS_ARRAY[@]}"; do
         if [[ ! "${i}" =~ ^[[:alnum:]]+$ ]]; then
             echo "**** Peer ${i} contains non-alphanumeric characters and thus will be skipped. No config for peer ${i} will be generated. ****"
@@ -382,6 +419,8 @@ $(cat /config/templates/peer.conf)
 DUDE"
                 # Insert I1-I5 into [Interface] section of peer conf
                 append_awg_signatures_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
+                # Insert AWG 3.0 params into [Interface] section (no-op unless AWG_VERSION=3.0)
+                append_awg3_params_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
                 # add peer info to server conf with presharedkey
                 cat <<DUDE >> /config/wg_confs/wg0.conf
 [Peer]
@@ -398,6 +437,8 @@ $(sed '/PresharedKey/d' "/config/templates/peer.conf")
 DUDE"
                 # Insert I1-I5 into [Interface] section of peer conf
                 append_awg_signatures_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
+                # Insert AWG 3.0 params into [Interface] section (no-op unless AWG_VERSION=3.0)
+                append_awg3_params_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
                 # add peer info to server conf without presharedkey
                 cat <<DUDE >> /config/wg_confs/wg0.conf
 [Peer]
