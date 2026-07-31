@@ -27,3 +27,8 @@ SECURITY.md
 # Docker files not needed in build context
 docker-compose.yml
 docker-compose.override.yml
+
+.claude/
+
+# Test files — run in CI, not needed in Docker build
+api/*_test.go

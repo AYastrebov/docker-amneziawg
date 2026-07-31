@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # Dockerfile for AmneziaWG with LinuxServer.io architecture
-# Multi-stage build: compile amneziawg-go, awg-tools, then create runtime image
+# Multi-stage build with two final targets:
+#   - runtime  (default): VPN container with s6-overlay
+#   - awg-api:            lightweight REST API sidecar
 
 # Upstream version defaults — override via --build-arg or CI
 ARG AMNEZIAWG_GO_VERSION=v3.0.2
@@ -38,9 +40,44 @@ RUN make && \
     chmod +x /tools-install/usr/bin/awg-quick
 
 # ============================================================================
-# Stage 3: Runtime image using LinuxServer base
+# Stage 3: Compile the REST API server
 # ============================================================================
-FROM ghcr.io/linuxserver/baseimage-alpine:3.24
+FROM golang:1.25.12-alpine AS api-builder
+
+RUN go install github.com/swaggo/swag/cmd/swag@latest
+WORKDIR /src/api
+COPY api/go.mod api/go.sum ./
+RUN go mod download
+COPY api/ .
+RUN swag init --parseDependency --output docs
+RUN CGO_ENABLED=0 go build -ldflags '-s -w' -trimpath -o /awg-api .
+
+# ============================================================================
+# Stage 4: API sidecar image (build with --target awg-api)
+# ============================================================================
+FROM alpine:3.24 AS awg-api
+
+RUN apk add --no-cache ca-certificates netcat-openbsd bash
+
+# awg + awg-quick for tunnel stats
+COPY --from=tools-builder /tools-install/usr/bin/awg /usr/bin/awg
+COPY --from=tools-builder /tools-install/usr/bin/awg-quick /usr/bin/awg-quick
+RUN chmod +x /usr/bin/awg /usr/bin/awg-quick
+
+COPY --from=api-builder /awg-api /usr/bin/awg-api
+
+# Entrypoint handles token generation and env defaults
+COPY api/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 8081/tcp
+ENTRYPOINT ["/entrypoint.sh"]
+
+# ============================================================================
+# Stage 5: Runtime image using LinuxServer base (default target — must stay
+# last so a plain `docker build .` still produces the VPN image)
+# ============================================================================
+FROM ghcr.io/linuxserver/baseimage-alpine:3.24 AS runtime
 
 # set version label
 ARG BUILD_DATE
