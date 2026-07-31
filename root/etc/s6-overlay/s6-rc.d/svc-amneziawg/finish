@@ -9,4 +9,5 @@ if [[ -f "/run/activeconfs" ]]; then
     done
     echo "**** All tunnels are down ****"
     rm -rf /run/activeconfs
+    rm -f /config/server/activeconfs
 fi

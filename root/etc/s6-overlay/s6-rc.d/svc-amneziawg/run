@@ -3,6 +3,9 @@
 
 unset AWG_CONFS
 rm -rf /run/activeconfs
+# /config/server/activeconfs mirrors the active tunnel list for the API
+# sidecar, which runs in a separate container and cannot see this /run.
+rm -f /config/server/activeconfs
 # Enumerate interfaces
 for awgconf in /config/wg_confs/*.conf; do
     if grep -q "\[Interface\]" "${awgconf}"; then
@@ -30,6 +33,10 @@ done
 
 if [[ -z "${FAILED}" ]]; then
     declare -p AWG_CONFS > /run/activeconfs
+    # Mirror to /config/server so the API sidecar (separate container, no
+    # access to this container's /run) can read the active tunnel list.
+    mkdir -p /config/server
+    declare -p AWG_CONFS > /config/server/activeconfs
     echo "**** All tunnels are now active ****"
 else
     echo "**** Tunnel ${FAILED} failed, will stop all others! ****"
