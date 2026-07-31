@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated to use GitHub Packages for pre-built images
 
 ### Fixed
+- API tunnel-stats endpoints (`/api/v1/tunnels`, `ws/stats`) always returned an empty list: the dump parser identified interface lines by field count (5, plain WireGuard), but AmneziaWG emits 28 fields on every protocol version. Line type is now determined by position
+- API sidecar could not read userspace tunnel stats — `awg show` uses the UNIX socket in `/run/amneziawg`, which a shared network namespace does not cover. The compose example now shares it as a volume
 - API no longer exposes `AWG_HEADER_PROTECTION_KEY` — AWG parameters are now allowlisted
 - API WebSocket token is accepted via `Sec-WebSocket-Protocol`/`Authorization` instead of the query string, which gin wrote to the access log
 - `build_version` is now shared with sidecars in client mode as well as server mode

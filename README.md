@@ -232,9 +232,20 @@ services:
     depends_on: [amneziawg]
     volumes:
       - ./config:/config
-    environment:
-      - WAIT_FOR_CONFIG=true
+      - awgrun:/run/amneziawg   # userspace UAPI socket, see note below
+
+volumes:
+  awgrun:
 ```
+
+
+> **Live tunnel stats need `/run/amneziawg` shared.** In userspace mode (the
+> default, when the host has no amnezia kernel module) `awg show` talks to the
+> UNIX socket `/run/amneziawg/<iface>.sock`, which lives in the VPN container's
+> filesystem. `network_mode: service:` shares the network namespace but **not**
+> the filesystem, so without the `awgrun` volume on both containers the
+> `/api/v1/tunnels` endpoints and the `ws/stats` feed return an empty list.
+> Kernel mode uses netlink and is unaffected.
 
 The sidecar is read-only and never exposes secrets: peer private keys stay in the config volume, and the AWG 3.0 `HeaderProtectionKey` is excluded from `/api/v1/server` by an allowlist. The Swagger UI is off unless you set `API_SWAGGER=true` — it sits outside the authenticated routes.
 

@@ -54,10 +54,18 @@ func GetTunnelStats() ([]TunnelInfo, error) {
 
 // getTunnelStatsReal parses the output of `awg show all dump`.
 //
-// The dump format is tab-separated:
+// The dump format is tab-separated. `awg show all dump` prints one device line
+// per interface, immediately followed by that interface's peer lines:
 //
-//	Interface line: <iface>\t<private_key>\t<public_key>\t<listen_port>\t<fwmark>
-//	Peer line:      <iface>\t<public_key>\t<preshared_key>\t<endpoint>\t<allowed_ips>\t<latest_handshake>\t<transfer_rx>\t<transfer_tx>\t<persistent_keepalive>
+//	Device line: <iface>\t<private_key>\t<public_key>\t<listen_port>\t<fwmark>
+//	Peer line:   <iface>\t<public_key>\t<preshared_key>\t<endpoint>\t<allowed_ips>\t<latest_handshake>\t<transfer_rx>\t<transfer_tx>\t<persistent_keepalive>
+//
+// The device line above is plain WireGuard's. AmneziaWG appends its own
+// parameters (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5, and in 3.0 the header
+// protection key plus six timers), producing 28 fields in practice — for
+// every protocol version, since unset values are emitted as `(null)`, `(none)`
+// or `0` rather than omitted. Line type is therefore determined by position,
+// never by field count.
 func getTunnelStatsReal() ([]TunnelInfo, error) {
 	out, err := exec.Command(awgBinary, "show", "all", "dump").Output()
 	if err != nil {
@@ -82,12 +90,24 @@ func ParseAWGDump(output string) ([]TunnelInfo, error) {
 			continue
 		}
 		fields := strings.Split(line, "\t")
+		if len(fields) < 4 {
+			continue
+		}
 
 		ifaceName := fields[0]
 
-		if len(fields) == 5 {
-			// Interface line
-			port, _ := strconv.Atoi(fields[3])
+		// A device line is the first line seen for an interface and has an
+		// integer listen port in field 3; a peer line has an endpoint there
+		// ("(none)" or "host:port"). Do not switch on len(fields):
+		// AmneziaWG's device line carries its obfuscation parameters and is
+		// far longer than WireGuard's five fields, and its width varies with
+		// the protocol version. Only the public key (field 2) and listen port
+		// are surfaced — the private key in field 1 and the AWG 3.0 header
+		// protection key are deliberately never read.
+		port, portErr := strconv.Atoi(fields[3])
+		_, seen := tunnels[ifaceName]
+
+		if !seen && portErr == nil {
 			t := &TunnelInfo{
 				Name: ifaceName,
 				Interface: IfaceInfo{

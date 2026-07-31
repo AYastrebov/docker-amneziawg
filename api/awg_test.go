@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -160,5 +162,93 @@ func TestParseAWGDump_NonNumericTransfer(t *testing.T) {
 	}
 	if tunnels[0].Peers[0].TransferTx != 0 {
 		t.Errorf("expected 0 for non-numeric tx, got %d", tunnels[0].Peers[0].TransferTx)
+	}
+}
+
+// Real `awg show all dump` output. AmneziaWG always emits a 28-field device
+// line (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5, then the AWG 3.0 header protection
+// key and timers), unlike plain WireGuard's 5-field line. Captured from a live
+// container; keys replaced with placeholders.
+const (
+	realAWG30Dump = "wg0\tPRIV_BASE64_KEY_PLACEHOLDER_AAAAAAAAAAAAAAAA=\tSRVPUB_BASE64_KEY_PLACEHOLDER_AAAAAAAAAAAA=\t51820\t5\t40\t159\t99\t25\t32\t23\t430591201-480591201\t804776269-854776269\t1265869246-1315869246\t2017171383-2067171383\t<b 0xc3><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x449e><r 4><r 1178>\t(null)\t(null)\t(null)\t(null)\tHPKEY_BASE64_KEY_PLACEHOLDER_AAAAAAAAAAAAA=\t68-127\t107-125\t6-9\t170-195\t11-15\t14-20\toff\n" +
+		"wg0\tPEER1PUB_BASE64_KEY_PLACEHOLDER_AAAAAAAAAA=\tPSK1_BASE64_KEY_PLACEHOLDER_AAAAAAAAAAAAAA=\t(none)\t10.13.13.2/32\t0\t0\t0\toff\n" +
+		"wg0\tPEER2PUB_BASE64_KEY_PLACEHOLDER_AAAAAAAAAA=\tPSK2_BASE64_KEY_PLACEHOLDER_AAAAAAAAAAAAAA=\t1.2.3.4:51820\t10.13.13.3/32\t1716000000\t123456\t789012\toff\n"
+
+	realAWG20Dump = "wg0\tPRIV_BASE64_KEY_PLACEHOLDER_AAAAAAAAAAAAAAAA=\tSRVPUB_BASE64_KEY_PLACEHOLDER_AAAAAAAAAAAA=\t51820\t3\t44\t80\t18\t117\t46\t14\t189005014-239005014\t925715606-975715606\t1521067930-1571067930\t1621023317-1671023317\t<b 0xc3><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x449e><r 4><r 1178>\t(null)\t(null)\t(null)\t(null)\t(none)\t0\t0\t0\t0\t0\t0\toff\n" +
+		"wg0\tPEER1PUB_BASE64_KEY_PLACEHOLDER_AAAAAAAAAA=\tPSK1_BASE64_KEY_PLACEHOLDER_AAAAAAAAAAAAAA=\t(none)\t10.13.13.2/32\t0\t0\t0\toff\n"
+)
+
+func TestParseAWGDump_RealAmneziaWGOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		dump  string
+		peers int
+	}{
+		{"awg 3.0", realAWG30Dump, 2},
+		{"awg 2.0", realAWG20Dump, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tunnels, err := ParseAWGDump(tc.dump)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(tunnels) != 1 {
+				t.Fatalf("expected 1 tunnel, got %d", len(tunnels))
+			}
+			tun := tunnels[0]
+			if tun.Name != "wg0" {
+				t.Errorf("name = %q, want wg0", tun.Name)
+			}
+			if tun.Interface.ListenPort != 51820 {
+				t.Errorf("listen_port = %d, want 51820", tun.Interface.ListenPort)
+			}
+			// Field 2 is the public key; field 1 is the private key and must
+			// never be surfaced.
+			if tun.Interface.PublicKey != "SRVPUB_BASE64_KEY_PLACEHOLDER_AAAAAAAAAAAA=" {
+				t.Errorf("public_key = %q, want the device public key", tun.Interface.PublicKey)
+			}
+			if strings.Contains(tun.Interface.PublicKey, "PRIV") {
+				t.Errorf("private key surfaced as public key: %q", tun.Interface.PublicKey)
+			}
+			if len(tun.Peers) != tc.peers {
+				t.Fatalf("expected %d peers, got %d", tc.peers, len(tun.Peers))
+			}
+			if tun.Peers[0].AllowedIPs != "10.13.13.2/32" {
+				t.Errorf("peer0 allowed_ips = %q", tun.Peers[0].AllowedIPs)
+			}
+		})
+	}
+}
+
+func TestParseAWGDump_NeverExposesDeviceSecrets(t *testing.T) {
+	tunnels, err := ParseAWGDump(realAWG30Dump)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	blob, err := json.Marshal(tunnels)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, secret := range []string{"PRIV_BASE64", "HPKEY_BASE64", "PSK1_BASE64", "PSK2_BASE64"} {
+		if strings.Contains(string(blob), secret) {
+			t.Errorf("device secret %q leaked into tunnel JSON: %s", secret, blob)
+		}
+	}
+}
+
+func TestParseAWGDump_PeerTransferAndHandshake(t *testing.T) {
+	tunnels, err := ParseAWGDump(realAWG30Dump)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	p := tunnels[0].Peers[1]
+	if p.Endpoint != "1.2.3.4:51820" {
+		t.Errorf("endpoint = %q, want 1.2.3.4:51820", p.Endpoint)
+	}
+	if p.TransferRx != 123456 || p.TransferTx != 789012 {
+		t.Errorf("transfer rx/tx = %d/%d, want 123456/789012", p.TransferRx, p.TransferTx)
+	}
+	if p.LatestHandshake == "" {
+		t.Error("latest_handshake empty, want an RFC3339 timestamp")
 	}
 }

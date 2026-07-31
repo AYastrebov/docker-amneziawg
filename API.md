@@ -23,7 +23,21 @@ services:
       - ./config:/config
     environment:
       - WAIT_FOR_CONFIG=true
+    volumes:
+      - ./config:/config
+      - awgrun:/run/amneziawg
+
+volumes:
+  awgrun:
 ```
+
+> **Live tunnel stats need `/run/amneziawg` shared.** In userspace mode (the
+> default, when the host has no amnezia kernel module) `awg show` talks to the
+> UNIX socket `/run/amneziawg/<iface>.sock`, which lives in the VPN container's
+> filesystem. `network_mode: service:` shares the network namespace but **not**
+> the filesystem, so without the `awgrun` volume on both containers the
+> `/api/v1/tunnels` endpoints and the `ws/stats` feed return an empty list.
+> Kernel mode uses netlink and is unaffected.
 
 2. Start the stack. The API token is auto-generated and printed in sidecar logs:
 

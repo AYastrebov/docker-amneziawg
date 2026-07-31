@@ -79,6 +79,7 @@ services:
       # - USE_COREDNS=true                  # Enable CoreDNS (auto in server mode)
     volumes:
       - ./config:/config
+      # - awgrun:/run/amneziawg             # Share the userspace UAPI socket with the API sidecar
     ports:
       - 51820:51820/udp
       # - 8081:8081/tcp                     # REST API (published here, used by sidecar)
@@ -93,6 +94,13 @@ services:
   # Shares the VPN container's network namespace (required for `awg show`).
   # Port 8081 must be published on the amneziawg service above.
   #
+  # The awgrun volume shares /run/amneziawg with the VPN container. In
+  # userspace mode (the default — no amnezia kernel module on the host)
+  # `awg show` talks to the UNIX socket /run/amneziawg/<iface>.sock, which
+  # lives in the VPN container's filesystem. Sharing the network namespace
+  # does NOT share that socket, so without this volume the tunnel-stats
+  # endpoints return an empty list. Also uncomment it on the VPN service.
+  #
   # awg-api:
   #   image: ghcr.io/ayastrebov/awg-api:latest
   #   container_name: awg-api
@@ -102,6 +110,7 @@ services:
   #       condition: service_started
   #   volumes:
   #     - ./config:/config
+  #     - awgrun:/run/amneziawg
   #   environment:
   #     # - API_TOKEN=                      # Auto-generated if empty, saved to /config/server/api_token
   #     # - API_PORT=8081                   # API listen port
@@ -162,3 +171,15 @@ services:
 #       - net.ipv4.ip_forward=1
 #       - net.ipv4.conf.all.src_valid_mark=1
 #     restart: unless-stopped
+
+# ============================================================================
+# Named volumes
+# ============================================================================
+# Uncomment together with the awg-api sidecar above. Shares the userspace
+# UAPI socket (/run/amneziawg/<iface>.sock) between the VPN container and the
+# sidecar so `awg show` works from the sidecar. Not needed when the host has a
+# 3.0-capable amnezia kernel module loaded — kernel mode uses netlink, which
+# the shared network namespace already covers.
+#
+# volumes:
+#   awgrun:

@@ -68,6 +68,8 @@ Security invariants — do not regress these:
 - `readAWGParams()` in `api/config.go` uses an **allowlist**. Never restore pass-through: `/config/server/awg_params` contains `AWG_HEADER_PROTECTION_KEY`, a symmetric key shared with every client. New non-secret params need adding to `awgParamAllowlist` to become visible.
 - WebSocket auth reads the token from `Sec-WebSocket-Protocol` or `Authorization`. The `?token=` form is deprecated because gin logs raw query strings; the WS paths are in the logger's `SkipPaths` for that reason.
 - Swagger is opt-in (`API_SWAGGER=true`) because `/swagger/*` is mounted outside the authenticated route group.
+- `ParseAWGDump()` in `api/awg.go` must **never** switch on `len(fields)` to tell device lines from peer lines. AmneziaWG emits a 28-field device line on every protocol version (WireGuard emits 5), so the old `== 5` check silently made `/api/v1/tunnels` always return empty. Device lines are identified by being the first line for an interface with an integer listen port in field 3. Test fixtures must be real `awg show all dump` output, not WireGuard's.
+- The sidecar needs `/run/amneziawg` shared as a volume to read userspace tunnel stats: `awg show` uses that UNIX socket, and `network_mode: service:` shares only the network namespace. Kernel mode uses netlink and does not need it.
 
 See `API.md` for endpoint docs and `DECOUPLING.md` for architecture rationale.
 
