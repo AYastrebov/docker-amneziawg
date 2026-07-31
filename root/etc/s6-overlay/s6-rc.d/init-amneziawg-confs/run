@@ -174,7 +174,11 @@ generate_awg_params() {
         AWG_MAX_HANDSHAKE_ATTEMPTS=""
     fi
 
-    # Save params to file for persistence
+    # Save params to file for persistence.
+    # generate_confs also creates this dir, but it runs *after* us — without this
+    # mkdir the write fails on a fresh install and awg_params is never created,
+    # so the next start regenerates every parameter and invalidates peer confs.
+    mkdir -p /config/server
     cat > /config/server/awg_params <<EOF
 AWG_VERSION=$AWG_VERSION
 AWG_JC=$AWG_JC
