@@ -148,15 +148,13 @@ func main() {
 	slog.Info("api server stopped")
 }
 
-// swaggerEnabled reports whether the Swagger UI should be mounted. Truthy
-// values: unset, "1", "true", "yes" (case-insensitive). Falsy: "0", "false",
-// "no". Anything else also disables it (fail-safe).
+// swaggerEnabled reports whether the Swagger UI should be mounted. The UI sits
+// outside the authenticated route group, so it is opt-in: only "1", "true",
+// "yes", or "on" (case-insensitive) enable it. Unset or anything else keeps it
+// off, which is the safe default for a sidecar reachable through a public
+// reverse proxy.
 func swaggerEnabled() bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv("API_SWAGGER")))
-	if v == "" {
-		return true
-	}
-	switch v {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("API_SWAGGER"))) {
 	case "1", "true", "yes", "on":
 		return true
 	default:
