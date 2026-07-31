@@ -79,7 +79,7 @@ ports:
 
 ### Kernel datapath vs userspace fallback
 
-The container picks its datapath at startup by running `ip link add dev test type wireguard`. If that succeeds, it uses the kernel datapath via netlink. If it fails, it falls back to userspace `amneziawg-go` (works fine for almost all use cases; slightly higher CPU).
+The container picks its datapath at startup by running `ip link add dev test type amneziawg` (the amnezia kernel module's link kind — `awg-quick` brings tunnels up with `type amneziawg`, not `type wireguard`, so a plain wireguard module does not enable the kernel datapath). If that succeeds, it uses the kernel datapath via netlink. If it fails, it falls back to userspace `amneziawg-go` (works fine for almost all use cases; slightly higher CPU).
 
 The container **does not load kernel modules itself** — it only checks whether they're already loaded. So the recipe for in-kernel datapath is:
 

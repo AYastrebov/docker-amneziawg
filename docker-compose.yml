@@ -43,7 +43,7 @@ services:
       # - SERVER_ALLOWEDIPS_PEER_laptop=192.168.1.0/24
 
       # ---- AmneziaWG Protocol Version ----
-      # - AWG_VERSION=2.0                   # "2.0" (default) or "1.5" for legacy clients
+      # - AWG_VERSION=2.0                   # "2.0" (default), "3.0" (header protection) or "1.5" for legacy clients
 
       # ---- AmneziaWG Obfuscation (optional - random if not set) ----
       # - AWG_JC=4                          # Junk packet count (3-8 recommended)
@@ -64,6 +64,16 @@ services:
       # - AWG_I3=                                 # Optional third packet
       # - AWG_I4=                                 # Optional fourth packet
       # - AWG_I5=                                 # Optional fifth packet
+
+      # ---- AWG 3.0 (only used when AWG_VERSION=3.0 - random if not set) ----
+      # Timers are "lo-hi" ranges; each side picks its own value from the range.
+      # - AWG_HEADER_PROTECTION_KEY=            # Shared key, must match on server and all clients (needs S1-S4 >= 12)
+      # - AWG_CONTENT_PADDING=32-96             # Extra padding per transport packet, bytes (0 disables)
+      # - AWG_REKEY_AFTER_TIME=110-130          # Seconds before the initiator rekeys
+      # - AWG_REKEY_TIMEOUT=5-9                 # Handshake retransmit timeout, seconds
+      # - AWG_REJECT_AFTER_TIME=180-200         # Keypair lifetime, seconds
+      # - AWG_KEEPALIVE_TIMEOUT=10-18           # Keepalive interval when idle, seconds
+      # - AWG_MAX_HANDSHAKE_ATTEMPTS=15-22      # Handshake retries before giving up
 
       # ---- CoreDNS ----
       # - USE_COREDNS=true                  # Enable CoreDNS (auto in server mode)
