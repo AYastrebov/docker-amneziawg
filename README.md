@@ -211,6 +211,33 @@ docker exec amneziawg /app/show-peer 1 2 3
 docker exec amneziawg /app/show-peer laptop phone tablet
 ```
 
+## REST API (optional sidecar)
+
+Add the `awg-api` sidecar container for a REST API with peer configs and QR codes, live tunnel stats, host metrics, and structured logs. The API token is auto-generated on first run and saved to `/config/server/api_token`.
+
+See [API.md](API.md) for endpoints and examples.
+
+```yaml
+services:
+  amneziawg:
+    image: ghcr.io/ayastrebov/docker-amneziawg:latest
+    # ... (existing config)
+    ports:
+      - 51820:51820/udp
+      - 8081:8081/tcp          # API port (published here, used by sidecar)
+
+  awg-api:
+    image: ghcr.io/ayastrebov/awg-api:latest
+    network_mode: service:amneziawg
+    depends_on: [amneziawg]
+    volumes:
+      - ./config:/config
+    environment:
+      - WAIT_FOR_CONFIG=true
+```
+
+The sidecar is read-only and never exposes secrets: peer private keys stay in the config volume, and the AWG 3.0 `HeaderProtectionKey` is excluded from `/api/v1/server` by an allowlist. The Swagger UI is off unless you set `API_SWAGGER=true` — it sits outside the authenticated routes.
+
 ## Support Info
 
 ```bash
@@ -227,9 +254,13 @@ docker exec -it amneziawg /bin/bash
 ## Building Locally
 
 ```bash
+# VPN image (default target)
 docker build -t amneziawg .
 # Multi-arch:
 docker buildx build --platform linux/amd64,linux/arm64 -t amneziawg .
+
+# API sidecar image
+docker build --target awg-api -t awg-api .
 ```
 
 ## Links

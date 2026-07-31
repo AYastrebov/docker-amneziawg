@@ -31,13 +31,19 @@ There is no automated test suite. CI runs smoke tests on PRs: binary presence, s
 
 ## Architecture
 
-### Dockerfile: 3-stage multi-arch build
+### Dockerfile: 5-stage multi-arch build with two targets
 
 | Stage | Base | Output |
 |---|---|---|
 | `go-builder` | `golang:1.25.12-alpine` | `/src/amneziawg-go` (static binary, CGO) |
 | `tools-builder` | `alpine:3.24` | `/usr/bin/awg` (compiled C) + `/usr/bin/awg-quick` (bash script copied from `src/wg-quick/linux.bash`) |
-| runtime | `ghcr.io/linuxserver/baseimage-alpine:3.24` | Production image |
+| `api-builder` | `golang:1.25.12-alpine` | `/awg-api` (static binary, pure Go + Gin + Swagger) |
+| `awg-api` **(target)** | `alpine:3.24` | API sidecar image — `awg` + `awg-quick` + `awg-api`, no s6 |
+| `runtime` **(default target)** | `ghcr.io/linuxserver/baseimage-alpine:3.24` | VPN image — no API binary |
+
+Build targets: `docker build .` or `--target runtime` (VPN), `--target awg-api` (sidecar).
+
+**`runtime` must remain the last stage in the file.** Docker builds the final stage when no `--target` is given, so moving it would silently make a plain `docker build .` produce the API image instead of the VPN one.
 
 Runtime creates compatibility symlinks: `wg → awg`, `wg-quick → awg-quick`, `/etc/wireguard → /config/wg_confs`.
 
@@ -48,11 +54,22 @@ init-config (LSIO) → init-amneziawg-module (oneshot) → init-amneziawg-confs 
 ```
 
 - **init-amneziawg-module**: Tests kernel support via `ip link add dev test type amneziawg` (the amnezia module's rtnl link kind — awg-quick creates `type amneziawg`, not `type wireguard`). Falls back to `amneziawg-go` userspace (exports `WG_QUICK_USERSPACE_IMPLEMENTATION`).
-- **init-amneziawg-confs**: Config generation using eval+heredoc template expansion from `/config/templates/`. Server mode generates keys, wg0.conf, peer configs, QR codes. Client mode disables CoreDNS.
+- **init-amneziawg-confs**: Config generation using eval+heredoc template expansion from `/config/templates/`. Server mode generates keys, wg0.conf, peer configs, QR codes. Client mode disables CoreDNS. Copies `/build_version` to `/config/server/build_version` for sidecar access (in both modes).
 - **svc-coredns**: Longrun CoreDNS service with `notification-fd 3` health checks. Auto-disabled if port 53 already bound (and `USE_COREDNS` not explicitly set) or `USE_COREDNS=false`. In client mode, defaults to `false` unless overridden. Disabling in server mode breaks DNS for peers using `PEERDNS=auto` — set `PEERDNS` to a public resolver.
 - **svc-amneziawg**: Oneshot service (up/down scripts). Validates `[Interface]` in each .conf, activates tunnels, saves active confs to `/run/activeconfs` via `declare -p`. Finish script tears down in reverse order.
 
 Dependencies are declared via empty files in `dependencies.d/`. Services are registered via empty files in `user/contents.d/`.
+
+### API sidecar (`awg-api` image)
+
+The REST API runs as a separate container (`ghcr.io/ayastrebov/awg-api`), not inside the VPN container. It shares the VPN's network namespace via `network_mode: service:amneziawg` and the `/config` volume. It has its own entrypoint (`api/entrypoint.sh`) handling token generation and config wait. All file paths are env-driven (`CONFIG_DIR`, `ACTIVE_CONFS_PATH`, `BUILD_VERSION_PATH`, `S6_ENV_DIR`, `AWG_BINARY_PATH`) with sidecar-appropriate defaults.
+
+Security invariants — do not regress these:
+- `readAWGParams()` in `api/config.go` uses an **allowlist**. Never restore pass-through: `/config/server/awg_params` contains `AWG_HEADER_PROTECTION_KEY`, a symmetric key shared with every client. New non-secret params need adding to `awgParamAllowlist` to become visible.
+- WebSocket auth reads the token from `Sec-WebSocket-Protocol` or `Authorization`. The `?token=` form is deprecated because gin logs raw query strings; the WS paths are in the logger's `SkipPaths` for that reason.
+- Swagger is opt-in (`API_SWAGGER=true`) because `/swagger/*` is mounted outside the authenticated route group.
+
+See `API.md` for endpoint docs and `DECOUPLING.md` for architecture rationale.
 
 ### Config persistence
 

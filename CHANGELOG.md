@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Optional REST API sidecar (`ghcr.io/ayastrebov/awg-api`) for monitoring: server info, tunnel stats, peer configs and QR codes, system metrics, structured logs, and WebSocket feeds
 - AWG 3.0 protocol support (`AWG_VERSION=3.0`): HeaderProtectionKey, ContentPaddingAddition and randomized protocol timers (RekeyAfterTime, RekeyTimeout, RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts), auto-generated with env overrides
 - Initial Docker container for AmneziaWG
 - Multi-stage Docker build with Go compilation
@@ -20,10 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-architecture support (amd64, arm64)
 
 ### Changed
+- **Breaking:** the API's Swagger UI is now opt-in via `API_SWAGGER=true` — it is served outside the authenticated route group
 - amneziawg-tools updated to v3.0.20260730, the first release with AWG 3.0 config parsing
 - Updated to use GitHub Packages for pre-built images
 
 ### Fixed
+- API no longer exposes `AWG_HEADER_PROTECTION_KEY` — AWG parameters are now allowlisted
+- API WebSocket token is accepted via `Sec-WebSocket-Protocol`/`Authorization` instead of the query string, which gin wrote to the access log
+- `build_version` is now shared with sidecars in client mode as well as server mode
 - `/config/server/awg_params` was never written on a fresh install (the directory did not exist yet), so every container restart regenerated all AWG obfuscation parameters and invalidated previously distributed peer configs
 
 ### Security
