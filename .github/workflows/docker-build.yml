@@ -23,6 +23,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # API sidecar ships as its own image from the same Dockerfile (--target awg-api)
+  API_IMAGE_NAME: ayastrebov/awg-api
   DOCKER_BUILDKIT: 1
   # Upstream versions are read from the Dockerfile ARG pins (single source of truth).
   # workflow_dispatch inputs override them for one-off builds.
@@ -109,6 +111,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: runtime
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -124,11 +127,32 @@ jobs:
           provenance: false
           sbom: false
 
+      - name: Build and push API sidecar image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: awg-api
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ env.API_IMAGE_NAME }}:latest
+          # Separate cache scope so the two targets do not evict each other.
+          cache-from: type=gha,scope=awg-api
+          cache-to: type=gha,mode=max,scope=awg-api
+          build-args: |
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+            VERSION=${{ steps.versions.outputs.tools_version }}
+            AMNEZIAWG_TOOLS_VERSION=${{ steps.versions.outputs.amneziawg_tools }}
+            BUILDKIT_INLINE_CACHE=1
+          provenance: false
+          sbom: false
+
       - name: Test image (PR only)
         if: github.event_name == 'pull_request'
         run: |
           # Build for local testing (single platform)
           docker buildx build --platform linux/amd64 --load -t test-image \
+            --target runtime \
             --build-arg AMNEZIAWG_GO_VERSION=${{ steps.versions.outputs.amneziawg_go }} \
             --build-arg AMNEZIAWG_TOOLS_VERSION=${{ steps.versions.outputs.amneziawg_tools }} \
             .
@@ -186,6 +210,38 @@ jobs:
           echo "### CoreDNS" >> "$GITHUB_STEP_SUMMARY"
           docker run --rm test-image which coredns
           echo "- CoreDNS binary present" >> "$GITHUB_STEP_SUMMARY"
+
+          # Verify the API binary is NOT in the VPN image (sidecar architecture)
+          echo "### Sidecar separation" >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm test-image sh -c '
+            ! test -f /usr/bin/awg-api && echo "awg-api: correctly absent from VPN image"
+            ! test -d /etc/s6-overlay/s6-rc.d/svc-awg-api && echo "svc-awg-api: correctly absent"
+          '
+          echo "- VPN image contains no API binary or service" >> "$GITHUB_STEP_SUMMARY"
+
+          # Build and smoke-test the API sidecar image
+          echo "### API sidecar image" >> "$GITHUB_STEP_SUMMARY"
+          docker buildx build --platform linux/amd64 --load -t awg-api-smoke \
+            --target awg-api \
+            --build-arg AMNEZIAWG_TOOLS_VERSION=${{ steps.versions.outputs.amneziawg_tools }} \
+            .
+          docker run --rm --entrypoint sh awg-api-smoke -c '
+            test -x /usr/bin/awg-api && echo "awg-api: executable"
+            command -v awg awg-quick >/dev/null && echo "awg tools: present"
+            ! test -d /etc/s6-overlay && echo "s6-overlay: correctly absent from sidecar"
+          '
+          echo "- API sidecar image OK" >> "$GITHUB_STEP_SUMMARY"
+
+          # A plain build (no --target) must still produce the VPN image
+          echo "### Default build target" >> "$GITHUB_STEP_SUMMARY"
+          docker buildx build --platform linux/amd64 --load -t default-target-image \
+            --build-arg AMNEZIAWG_GO_VERSION=${{ steps.versions.outputs.amneziawg_go }} \
+            --build-arg AMNEZIAWG_TOOLS_VERSION=${{ steps.versions.outputs.amneziawg_tools }} \
+            .
+          docker run --rm --entrypoint sh default-target-image -c '
+            ! test -f /usr/bin/awg-api && echo "default target: VPN image (correct)"
+          '
+          echo "- Default build still yields the VPN image" >> "$GITHUB_STEP_SUMMARY"
 
           echo "All smoke tests passed!" >> "$GITHUB_STEP_SUMMARY"
           echo "Smoke tests passed!"
