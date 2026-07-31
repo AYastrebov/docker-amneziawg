@@ -621,6 +621,12 @@ fi
 resolvconf -a control 2>/dev/null < /etc/resolv.conf
 resolvconf -u
 
+# share build version with sidecar containers via /config volume.
+# mkdir is required because /config/server is otherwise only created in server
+# mode (by generate_awg_params) — in client mode the copy would silently fail.
+mkdir -p /config/server
+cp /build_version /config/server/build_version 2>/dev/null || true
+
 # permissions
 lsiown -R abc:abc \
     /config
