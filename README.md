@@ -32,7 +32,15 @@ For best performance, install the [AmneziaWG kernel module](https://github.com/a
 | Version | When to Use |
 |---------|-------------|
 | `2.0` (default) | Full DPI evasion with I1-I5 signatures. Requires AmneziaVPN app 4.8.12.9+ |
+| `3.0` | Adds header protection (`HeaderProtectionKey`), content padding and randomized protocol timers. Requires AWG 3.0-capable clients; `HeaderProtectionKey` must be identical on server and all clients |
 | `1.5` | Legacy compatibility with older clients. No I1-I5, S3=S4=0 |
+
+> **`AWG_VERSION=3.0` needs 3.0-capable software on both ends.** By default
+> the container runs 3.0 in userspace (`amneziawg-go`, bundled). It also runs
+> 3.0 in kernel mode automatically when a 3.0-capable
+> [amneziawg kernel module](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module)
+> is loaded on the host — the generated config is identical either way.
+> Peers must use an AmneziaVPN app / amneziawg build that supports 3.0.
 
 Set via `AWG_VERSION` environment variable. All obfuscation parameters are randomized automatically — override only if you need specific values (e.g., to match an existing setup).
 
@@ -127,7 +135,7 @@ docker run -d \
 | `-e SERVER_ALLOWEDIPS_PEER_X=` | Per-peer server AllowedIPs for site-to-site VPN |
 | `-e LOG_CONFS=true` | Show generated configs and QR codes in container logs |
 | `-e USE_COREDNS=true` | Enable/disable built-in CoreDNS. Defaults to `true` in server mode, `false` in client mode. Auto-disables when port 53 is already bound unless explicitly set. **Warning:** setting `false` in server mode breaks DNS for peers that use `PEERDNS=auto` (the default) — set `PEERDNS` to a public resolver like `1.1.1.1` if you disable CoreDNS |
-| `-e AWG_VERSION=2.0` | Protocol version: `2.0` (default, full DPI evasion) or `1.5` (legacy) |
+| `-e AWG_VERSION=2.0` | Protocol version: `2.0` (default, full DPI evasion), `3.0` (header protection + randomized timers) or `1.5` (legacy) |
 | `-v /config` | Persistent config volume |
 | `--cap-add NET_ADMIN` | Required for tunnel management |
 | `--cap-add SYS_MODULE` | Usually not needed. The container does **not** load kernel modules itself — it only checks whether `wireguard`/`amneziawg` is already loaded on the host. Keep `SYS_MODULE` only on minimal hosts that don't auto-load iptables NAT modules. |
@@ -136,7 +144,7 @@ docker run -d \
 
 ### AmneziaWG Obfuscation Parameters
 
-All parameters are optional — random values are generated automatically. Server and all clients must use identical values.
+All parameters are optional — random values are generated automatically. Server and all clients must use identical values (timer parameters excepted: each side may use its own).
 
 | Parameter | Default | Constraints |
 |-----------|---------|-------------|
@@ -145,8 +153,8 @@ All parameters are optional — random values are generated automatically. Serve
 | `-e AWG_JMAX=` | Random 80-250 | Max junk size in bytes (max 1280) |
 | `-e AWG_S1=` | Random 15-150 | Init padding bytes (max 1132). S1+56 must not equal S2 |
 | `-e AWG_S2=` | Random 15-150 | Response padding bytes (max 1188) |
-| `-e AWG_S3=` | Random 8-55 (2.0) / 0 (1.5) | Cookie padding bytes (max 64) |
-| `-e AWG_S4=` | Random 4-27 (2.0) / 0 (1.5) | Transport padding bytes (max 32). Per-packet overhead — keep small |
+| `-e AWG_S3=` | Random 8-55 (2.0) / 12-55 (3.0) / 0 (1.5) | Cookie padding bytes (max 64) |
+| `-e AWG_S4=` | Random 4-27 (2.0) / 12-27 (3.0) / 0 (1.5) | Transport padding bytes (max 32). Per-packet overhead — keep small |
 | `-e AWG_H1=` | Auto range (2.0) / int (1.5) | Header obfuscation. H1-H4 must be unique, all >= 5 |
 | `-e AWG_H2=` | Auto range (2.0) / int (1.5) | AWG 2.0 uses range format (e.g. `90666522-140666522`) |
 | `-e AWG_H3=` | Auto range (2.0) / int (1.5) | Single integers cause the Amnezia app to report AWG 1.5 |
@@ -156,6 +164,20 @@ All parameters are optional — random values are generated automatically. Serve
 | `-e AWG_I3=` | empty | |
 | `-e AWG_I4=` | empty | |
 | `-e AWG_I5=` | empty | |
+
+#### AWG 3.0 parameters
+
+Only generated when `AWG_VERSION=3.0`. Timer values are `lo-hi` ranges — the endpoint picks a fresh random value in that range, so each side may use its own.
+
+| Parameter | Default | Constraints |
+|-----------|---------|-------------|
+| `-e AWG_HEADER_PROTECTION_KEY=` | Auto-generated shared key (3.0) | Encrypts packet headers. Must be identical on server and all clients. Requires S1-S4 >= 12 |
+| `-e AWG_CONTENT_PADDING=` | Random range within 16-128 (3.0) | Extra random padding per transport packet, `lo-hi` bytes. `0` disables |
+| `-e AWG_REKEY_AFTER_TIME=` | Random range within 100-145s (3.0) | Time before initiator rekeys, `lo-hi` seconds (WireGuard default 120) |
+| `-e AWG_REKEY_TIMEOUT=` | Random range within 4-10s (3.0) | Handshake retransmit timeout, `lo-hi` seconds (default 5) |
+| `-e AWG_REJECT_AFTER_TIME=` | Random range, derived (3.0) | Keypair lifetime, `lo-hi` seconds (default 180). Must exceed RekeyAfterTime and KeepaliveTimeout + RekeyTimeout |
+| `-e AWG_KEEPALIVE_TIMEOUT=` | Random range within 8-22s (3.0) | Keepalive interval when idle, `lo-hi` seconds (default 10) |
+| `-e AWG_MAX_HANDSHAKE_ATTEMPTS=` | Random range within 12-28 (3.0) | Handshake retries before giving up, `lo-hi` count (default 18) |
 
 ### Custom Protocol Signatures (I1-I5)
 
