@@ -361,3 +361,48 @@ func TestGetServerInfo_ClientMode(t *testing.T) {
 		t.Errorf("mode = %q, want client", info.Mode)
 	}
 }
+
+func TestReadAWGParams_ExcludesSecrets(t *testing.T) {
+	tmpDir := t.TempDir()
+	origConfigDir := configDir
+	configDir = tmpDir
+	defer func() { configDir = origConfigDir }()
+
+	serverDir := filepath.Join(tmpDir, "server")
+	if err := os.MkdirAll(serverDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serverDir, "awg_params"), []byte(
+		"AWG_VERSION=3.0\n"+
+			"AWG_JC=5\n"+
+			"AWG_CONTENT_PADDING=32-55\n"+
+			"AWG_REKEY_AFTER_TIME=101-113\n"+
+			"AWG_HEADER_PROTECTION_KEY=kSg0FM1gjG7HCRXgfZImxrWfAKbb14YiRXnP9I6iQFI=\n"+
+			"AWG_FUTURE_SECRET=should-not-appear\n",
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	params := readAWGParams()
+
+	// Allowlisted params still come through, including the 3.0 additions.
+	if params["version"] != "3.0" {
+		t.Errorf("version = %q, want 3.0", params["version"])
+	}
+	if params["content_padding"] != "32-55" {
+		t.Errorf("content_padding = %q, want 32-55", params["content_padding"])
+	}
+	if params["rekey_after_time"] != "101-113" {
+		t.Errorf("rekey_after_time = %q, want 101-113", params["rekey_after_time"])
+	}
+
+	// The shared secret must never be exposed.
+	if v, ok := params["header_protection_key"]; ok {
+		t.Errorf("header_protection_key leaked to API: %q", v)
+	}
+
+	// Unknown keys are dropped, so a future secret fails closed.
+	if v, ok := params["future_secret"]; ok {
+		t.Errorf("unknown param future_secret leaked: %q", v)
+	}
+}

@@ -305,6 +305,26 @@ func readEnvFile(name string) string {
 	return strings.TrimSpace(string(data))
 }
 
+// awgParamAllowlist enumerates the AWG parameters that are safe to expose over
+// the API. readAWGParams drops anything absent from this set, so a secret
+// written into awg_params — AWG_HEADER_PROTECTION_KEY today, whatever upstream
+// adds tomorrow — is excluded by default rather than leaking until someone
+// notices. Adding a genuinely new non-secret parameter here is a one-liner.
+var awgParamAllowlist = map[string]struct{}{
+	"version": {},
+	"jc":      {}, "jmin": {}, "jmax": {},
+	"s1": {}, "s2": {}, "s3": {}, "s4": {},
+	"h1": {}, "h2": {}, "h3": {}, "h4": {},
+	"i1": {}, "i2": {}, "i3": {}, "i4": {}, "i5": {},
+	// AWG 3.0 — timers and padding are not secret; the header protection key is.
+	"content_padding":        {},
+	"rekey_after_time":       {},
+	"rekey_timeout":          {},
+	"reject_after_time":      {},
+	"keepalive_timeout":      {},
+	"max_handshake_attempts": {},
+}
+
 func readAWGParams() map[string]string {
 	params := map[string]string{}
 	f, err := os.Open(filepath.Join(configDir, "server", "awg_params"))
@@ -323,6 +343,9 @@ func readAWGParams() map[string]string {
 		if k, v, ok := strings.Cut(line, "="); ok {
 			key := strings.TrimPrefix(strings.TrimSpace(k), "AWG_")
 			key = strings.ToLower(key)
+			if _, allowed := awgParamAllowlist[key]; !allowed {
+				continue
+			}
 			params[key] = strings.TrimSpace(v)
 		}
 	}
