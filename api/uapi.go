@@ -2,17 +2,17 @@ package main
 
 import (
 	"bufio"
+	"crypto/ecdh"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/crypto/curve25519"
 )
 
 // uapiDialTimeout bounds a single socket read so a wedged amneziawg-go can't
@@ -132,9 +132,14 @@ func parseUAPIDeviceLine(t *TunnelInfo, key, val string) {
 		}
 	case "private_key":
 		// Derive the interface public key; never store the private key.
-		if pub, err := derivePublicKey(val); err == nil {
-			t.Interface.PublicKey = pub
+		pub, err := derivePublicKey(val)
+		if err != nil {
+			// Log rather than swallow: an empty interface public key is
+			// otherwise invisible until something downstream fails to match.
+			slog.Warn("uapi: deriving interface public key failed", "err", err)
+			return
 		}
+		t.Interface.PublicKey = pub
 	}
 	// Everything else (fwmark, jc/jmin/jmax, s1-s4, h1-h4, i1-i5,
 	// header_protection_key, timers) is not part of live stats and is ignored.
@@ -180,17 +185,21 @@ func hexKeyToBase64(h string) (string, error) {
 // derivePublicKey computes the Curve25519 public key for a hex private key and
 // returns it base64-encoded. The interface public key is not emitted by the
 // UAPI, only the private key, so it must be derived.
+//
+// Uses crypto/ecdh (stdlib): NewPrivateKey computes the public key eagerly, so
+// PublicKey() cannot fail, and it keeps the module free of an x/crypto direct
+// dependency.
 func derivePublicKey(hexPriv string) (string, error) {
 	priv, err := hex.DecodeString(hexPriv)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("decode private key hex: %w", err)
 	}
 	if len(priv) != 32 {
 		return "", fmt.Errorf("private key is %d bytes, want 32", len(priv))
 	}
-	pub, err := curve25519.X25519(priv, curve25519.Basepoint)
+	key, err := ecdh.X25519().NewPrivateKey(priv)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("derive public key: %w", err)
 	}
-	return base64.StdEncoding.EncodeToString(pub), nil
+	return base64.StdEncoding.EncodeToString(key.PublicKey().Bytes()), nil
 }
