@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"go.uber.org/goleak"
 )
@@ -150,4 +151,56 @@ func TestHub_NoGoroutineLeakOnClientDisconnect(t *testing.T) {
 	_ = conn.Close()
 	// Give the server side time to notice and tear down.
 	time.Sleep(200 * time.Millisecond)
+}
+
+func TestWSToken_PrecedenceAndFallbacks(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newCtx := func(target string, headers map[string]string) *gin.Context {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = req
+		return c
+	}
+
+	tests := []struct {
+		name    string
+		target  string
+		headers map[string]string
+		want    string
+	}{
+		{
+			name:    "subprotocol wins",
+			target:  "/api/v1/ws/stats?token=fromquery",
+			headers: map[string]string{"Sec-WebSocket-Protocol": "bearer, fromproto"},
+			want:    "fromproto",
+		},
+		{
+			name:    "authorization header used when no subprotocol",
+			target:  "/api/v1/ws/stats?token=fromquery",
+			headers: map[string]string{"Authorization": "Bearer fromheader"},
+			want:    "fromheader",
+		},
+		{
+			name:   "query string still works (deprecated)",
+			target: "/api/v1/ws/stats?token=fromquery",
+			want:   "fromquery",
+		},
+		{
+			name:   "nothing supplied",
+			target: "/api/v1/ws/stats",
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := wsToken(newCtx(tt.target, tt.headers)); got != tt.want {
+				t.Errorf("wsToken() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }

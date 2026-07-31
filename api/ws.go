@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,10 @@ const (
 )
 
 var upgrader = websocket.Upgrader{
+	// Offering "bearer" makes gorilla echo it back when a client authenticates
+	// via Sec-WebSocket-Protocol; browsers abort a handshake whose requested
+	// subprotocol is not echoed.
+	Subprotocols: []string{"bearer"},
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
 		if origin == "" {
@@ -36,6 +41,35 @@ var upgrader = websocket.Upgrader{
 		}
 		return origin == host
 	},
+}
+
+// wsToken extracts the bearer token from a WebSocket handshake, in precedence
+// order: Sec-WebSocket-Protocol (the only header a browser can set on a WS
+// handshake), then Authorization for non-browser clients, then the deprecated
+// ?token= query parameter. The query form is retained for one release because
+// gin logs raw query strings, which is what put the token in access logs.
+func wsToken(c *gin.Context) string {
+	protos := websocket.Subprotocols(c.Request)
+	for i, p := range protos {
+		if strings.EqualFold(p, "bearer") && i+1 < len(protos) {
+			return protos[i+1]
+		}
+	}
+
+	if auth := c.GetHeader("Authorization"); auth != "" {
+		parts := strings.SplitN(auth, " ", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+			return parts[1]
+		}
+	}
+
+	if q := c.Query("token"); q != "" {
+		slog.Warn("websocket token supplied via query string is deprecated and will be removed; use Sec-WebSocket-Protocol: bearer, <token>",
+			"path", c.Request.URL.Path)
+		return q
+	}
+
+	return ""
 }
 
 // --- Stats Hub ---

@@ -55,7 +55,9 @@ func main() {
 	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.Recovery())
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
-		SkipPaths: []string{"/health"},
+		// WS paths are skipped because the deprecated ?token= form would
+		// otherwise be written to the access log verbatim.
+		SkipPaths: []string{"/health", "/api/v1/ws/stats", "/api/v1/ws/logs"},
 	}))
 
 	// Health check — no auth
@@ -99,8 +101,8 @@ func main() {
 	go hub.Run(bgCtx)
 
 	r.GET("/api/v1/ws/stats", func(c *gin.Context) {
-		wsToken := c.Query("token")
-		if wsToken == "" || !constantTimeTokenMatch(wsToken, token) {
+		presented := wsToken(c)
+		if presented == "" || !constantTimeTokenMatch(presented, token) {
 			c.JSON(http.StatusUnauthorized, ErrorResponse("UNAUTHORIZED", "Invalid or missing token"))
 			return
 		}
@@ -108,8 +110,8 @@ func main() {
 	})
 
 	r.GET("/api/v1/ws/logs", func(c *gin.Context) {
-		wsToken := c.Query("token")
-		if wsToken == "" || !constantTimeTokenMatch(wsToken, token) {
+		presented := wsToken(c)
+		if presented == "" || !constantTimeTokenMatch(presented, token) {
 			c.JSON(http.StatusUnauthorized, ErrorResponse("UNAUTHORIZED", "Invalid or missing token"))
 			return
 		}
