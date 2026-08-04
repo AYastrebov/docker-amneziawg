@@ -36,6 +36,9 @@ fi
 # AWG_VERSION controls the protocol feature set:
 #   "2.0" (default) - Full AWG 2.0: S3/S4 padding, H1-H4 range support,
 #                     I1-I5 Custom Protocol Signatures (auto-generated if not set)
+#   "3.0"           - AWG 2.0 plus HeaderProtectionKey, ContentPaddingAddition
+#                     and randomized protocol timers. Requires 3.0-capable
+#                     clients; HeaderProtectionKey must match on all ends.
 #   "1.5"           - Legacy mode: S3=S4=0, no I1-I5 signatures,
 #                     compatible with AmneziaVPN < 4.8.12.9
 AWG_VERSION=${AWG_VERSION:-2.0}
@@ -64,6 +67,55 @@ generate_default_signatures() {
     AWG_I5=${AWG_I5:-}
 }
 
+# Extract lower/upper bound of an "lo-hi" range (single value => lo=hi)
+range_lo() { echo "${1%%-*}"; }
+range_hi() { echo "${1##*-}"; }
+
+# AWG 3.0: header protection key, content padding, randomized timers.
+# Ranges follow AmneziaWG-Architect "medium" intensity. Timer semantics:
+# amneziawg-go device/timers.go — each side uses its own values.
+generate_awg3_params() {
+    # Shared symmetric key — must be identical on server and all clients.
+    # Use genpsk (full-entropy 32 random bytes, like PresharedKey), NOT genkey
+    # (genkey emits a bit-clamped Curve25519 private key — wrong generator for
+    # a symmetric ChaCha20 header-protection key).
+    AWG_HEADER_PROTECTION_KEY=${AWG_HEADER_PROTECTION_KEY:-$(awg genpsk)}
+
+    # Extra random zero-padding appended to each transport packet
+    if [[ -z "${AWG_CONTENT_PADDING}" ]]; then
+        local _lo
+        _lo=$(shuf -i 16-72 -n 1)
+        AWG_CONTENT_PADDING="${_lo}-$(shuf -i $((_lo + 8))-128 -n 1)"
+    fi
+    if [[ -z "${AWG_REKEY_TIMEOUT}" ]]; then
+        local _lo
+        _lo=$(shuf -i 4-6 -n 1)
+        AWG_REKEY_TIMEOUT="${_lo}-$((_lo + $(shuf -i 1-4 -n 1)))"
+    fi
+    if [[ -z "${AWG_KEEPALIVE_TIMEOUT}" ]]; then
+        local _lo
+        _lo=$(shuf -i 8-14 -n 1)
+        AWG_KEEPALIVE_TIMEOUT="${_lo}-$((_lo + $(shuf -i 2-8 -n 1)))"
+    fi
+    if [[ -z "${AWG_REKEY_AFTER_TIME}" ]]; then
+        local _lo
+        _lo=$(shuf -i 100-120 -n 1)
+        AWG_REKEY_AFTER_TIME="${_lo}-$((_lo + $(shuf -i 10-25 -n 1)))"
+    fi
+    if [[ -z "${AWG_REJECT_AFTER_TIME}" ]]; then
+        # Must satisfy RejectAfterTime.lo > RekeyAfterTime.hi and
+        # RejectAfterTime.lo > KeepaliveTimeout.lo + RekeyTimeout.lo
+        local _floor=$(( $(range_hi "${AWG_REKEY_AFTER_TIME}") + $(range_hi "${AWG_KEEPALIVE_TIMEOUT}") + $(range_hi "${AWG_REKEY_TIMEOUT}") + 15 ))
+        local _lo=$(( _floor > 170 ? _floor : 170 ))
+        AWG_REJECT_AFTER_TIME="${_lo}-$((_lo + $(shuf -i 10-25 -n 1)))"
+    fi
+    if [[ -z "${AWG_MAX_HANDSHAKE_ATTEMPTS}" ]]; then
+        local _lo
+        _lo=$(shuf -i 12-18 -n 1)
+        AWG_MAX_HANDSHAKE_ATTEMPTS="${_lo}-$((_lo + $(shuf -i 2-10 -n 1)))"
+    fi
+}
+
 # Generate random AWG obfuscation parameters if not set
 generate_awg_params() {
     echo "**** AmneziaWG version: ${AWG_VERSION} ****"
@@ -75,16 +127,24 @@ generate_awg_params() {
     AWG_S1=${AWG_S1:-$(shuf -i 15-150 -n 1)}
     AWG_S2=${AWG_S2:-$(shuf -i 15-150 -n 1)}
 
-    if [[ "${AWG_VERSION}" == "2.0" ]]; then
-        # AWG 2.0: H1-H4 as non-overlapping range pairs (quadrant strategy, ~50M width each).
-        # Range format (e.g. "90666522-140666522") is required for the Amnezia app to detect AWG 2.0.
+    if [[ "${AWG_VERSION}" == "2.0" || "${AWG_VERSION}" == "3.0" ]]; then
+        # AWG 2.0/3.0: H1-H4 as non-overlapping range pairs (quadrant strategy, ~50M width each).
+        # Range format (e.g. "90666522-140666522") is required for the Amnezia app to detect AWG 2.0+.
         _h1_lo=$(shuf -i 5-486870911 -n 1);          AWG_H1=${AWG_H1:-${_h1_lo}-$((_h1_lo + 50000000))}
         _h2_lo=$(shuf -i 536870912-1023741823 -n 1);  AWG_H2=${AWG_H2:-${_h2_lo}-$((_h2_lo + 50000000))}
         _h3_lo=$(shuf -i 1073741824-1560612735 -n 1); AWG_H3=${AWG_H3:-${_h3_lo}-$((_h3_lo + 50000000))}
         _h4_lo=$(shuf -i 1610612736-2097483647 -n 1); AWG_H4=${AWG_H4:-${_h4_lo}-$((_h4_lo + 50000000))}
-        # AWG 2.0: S3/S4 padding and I1-I5 signatures
-        AWG_S3=${AWG_S3:-$(shuf -i 8-55 -n 1)}
-        AWG_S4=${AWG_S4:-$(shuf -i 4-27 -n 1)}
+        if [[ "${AWG_VERSION}" == "3.0" ]]; then
+            # AWG 3.0: S1-S4 must all be >= 12 — the HeaderProtection nonce is read
+            # from the first 12 bytes of the S-padding (amneziawg-go rejects the
+            # config otherwise). S4 stays <= 32 per protocol cap.
+            AWG_S3=${AWG_S3:-$(shuf -i 12-55 -n 1)}
+            AWG_S4=${AWG_S4:-$(shuf -i 12-27 -n 1)}
+        else
+            # AWG 2.0: S3/S4 padding
+            AWG_S3=${AWG_S3:-$(shuf -i 8-55 -n 1)}
+            AWG_S4=${AWG_S4:-$(shuf -i 4-27 -n 1)}
+        fi
         generate_default_signatures
     else
         # AWG 1.5 fallback: single integer H values, no S3/S4 padding, no signatures
@@ -101,7 +161,24 @@ generate_awg_params() {
         AWG_I5=${AWG_I5:-}
     fi
 
-    # Save params to file for persistence
+    if [[ "${AWG_VERSION}" == "3.0" ]]; then
+        generate_awg3_params
+    else
+        # Not 3.0: keep 3.0 params empty (e.g. after switching versions down)
+        AWG_HEADER_PROTECTION_KEY=""
+        AWG_CONTENT_PADDING=""
+        AWG_REKEY_AFTER_TIME=""
+        AWG_REKEY_TIMEOUT=""
+        AWG_REJECT_AFTER_TIME=""
+        AWG_KEEPALIVE_TIMEOUT=""
+        AWG_MAX_HANDSHAKE_ATTEMPTS=""
+    fi
+
+    # Save params to file for persistence.
+    # generate_confs also creates this dir, but it runs *after* us — without this
+    # mkdir the write fails on a fresh install and awg_params is never created,
+    # so the next start regenerates every parameter and invalidates peer confs.
+    mkdir -p /config/server
     cat > /config/server/awg_params <<EOF
 AWG_VERSION=$AWG_VERSION
 AWG_JC=$AWG_JC
@@ -120,6 +197,13 @@ AWG_I2=$AWG_I2
 AWG_I3=$AWG_I3
 AWG_I4=$AWG_I4
 AWG_I5=$AWG_I5
+AWG_HEADER_PROTECTION_KEY=$AWG_HEADER_PROTECTION_KEY
+AWG_CONTENT_PADDING=$AWG_CONTENT_PADDING
+AWG_REKEY_AFTER_TIME=$AWG_REKEY_AFTER_TIME
+AWG_REKEY_TIMEOUT=$AWG_REKEY_TIMEOUT
+AWG_REJECT_AFTER_TIME=$AWG_REJECT_AFTER_TIME
+AWG_KEEPALIVE_TIMEOUT=$AWG_KEEPALIVE_TIMEOUT
+AWG_MAX_HANDSHAKE_ATTEMPTS=$AWG_MAX_HANDSHAKE_ATTEMPTS
 EOF
 
     echo "**** AWG Obfuscation Parameters ****"
@@ -130,6 +214,13 @@ EOF
         echo "  I1-I5 Custom Protocol Signatures: enabled"
     else
         echo "  I1-I5 Custom Protocol Signatures: disabled (AWG 1.5 mode)"
+    fi
+    if [[ "${AWG_VERSION}" == "3.0" ]]; then
+        echo "  HeaderProtectionKey: set"
+        echo "  ContentPaddingAddition=$AWG_CONTENT_PADDING"
+        echo "  RekeyAfterTime=$AWG_REKEY_AFTER_TIME, RekeyTimeout=$AWG_REKEY_TIMEOUT"
+        echo "  RejectAfterTime=$AWG_REJECT_AFTER_TIME, KeepaliveTimeout=$AWG_KEEPALIVE_TIMEOUT"
+        echo "  MaxHandshakeAttempts=$AWG_MAX_HANDSHAKE_ATTEMPTS"
     fi
 
     # Validation warnings
@@ -150,6 +241,28 @@ EOF
             fi
             h_values[$h_val]="$h_name"
         done
+    fi
+
+    # AWG 3.0 validation warnings
+    if [[ "${AWG_VERSION}" == "3.0" ]]; then
+        # S1-S4 >= 12 is a hard requirement of HeaderProtectionKey
+        if [[ -n "${AWG_HEADER_PROTECTION_KEY}" ]]; then
+            for _s_name in AWG_S1 AWG_S2 AWG_S3 AWG_S4; do
+                if (( ${!_s_name} < 12 )) 2>/dev/null; then
+                    echo "**** WARNING: ${_s_name} (${!_s_name}) < 12 - all S values must be >= 12 when HeaderProtectionKey is set, amneziawg-go will reject the config ****"
+                fi
+            done
+        fi
+        # Timer invariants (amneziawg-go device/timers.go)
+        if (( $(range_lo "${AWG_REJECT_AFTER_TIME}") <= $(range_lo "${AWG_KEEPALIVE_TIMEOUT}") + $(range_lo "${AWG_REKEY_TIMEOUT}") )) 2>/dev/null; then
+            echo "**** WARNING: RejectAfterTime lower bound (${AWG_REJECT_AFTER_TIME}) must be greater than KeepaliveTimeout.lo + RekeyTimeout.lo (${AWG_KEEPALIVE_TIMEOUT} + ${AWG_REKEY_TIMEOUT}) ****"
+        fi
+        if (( $(range_hi "${AWG_REKEY_AFTER_TIME}") >= $(range_lo "${AWG_REJECT_AFTER_TIME}") )) 2>/dev/null; then
+            echo "**** WARNING: RekeyAfterTime upper bound (${AWG_REKEY_AFTER_TIME}) must be less than RejectAfterTime lower bound (${AWG_REJECT_AFTER_TIME}) ****"
+        fi
+        if (( $(range_lo "${AWG_MAX_HANDSHAKE_ATTEMPTS}") < 1 )) 2>/dev/null; then
+            echo "**** WARNING: MaxHandshakeAttempts lower bound (${AWG_MAX_HANDSHAKE_ATTEMPTS}) must be >= 1 ****"
+        fi
     fi
 }
 
@@ -173,6 +286,13 @@ load_awg_params() {
         AWG_I3=${AWG_I3:-$(grep "^AWG_I3=" /config/server/awg_params | cut -d= -f2-)}
         AWG_I4=${AWG_I4:-$(grep "^AWG_I4=" /config/server/awg_params | cut -d= -f2-)}
         AWG_I5=${AWG_I5:-$(grep "^AWG_I5=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_HEADER_PROTECTION_KEY=${AWG_HEADER_PROTECTION_KEY:-$(grep "^AWG_HEADER_PROTECTION_KEY=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_CONTENT_PADDING=${AWG_CONTENT_PADDING:-$(grep "^AWG_CONTENT_PADDING=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_REKEY_AFTER_TIME=${AWG_REKEY_AFTER_TIME:-$(grep "^AWG_REKEY_AFTER_TIME=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_REKEY_TIMEOUT=${AWG_REKEY_TIMEOUT:-$(grep "^AWG_REKEY_TIMEOUT=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_REJECT_AFTER_TIME=${AWG_REJECT_AFTER_TIME:-$(grep "^AWG_REJECT_AFTER_TIME=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_KEEPALIVE_TIMEOUT=${AWG_KEEPALIVE_TIMEOUT:-$(grep "^AWG_KEEPALIVE_TIMEOUT=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_MAX_HANDSHAKE_ATTEMPTS=${AWG_MAX_HANDSHAKE_ATTEMPTS:-$(grep "^AWG_MAX_HANDSHAKE_ATTEMPTS=" /config/server/awg_params | cut -d= -f2-)}
     fi
 }
 
@@ -187,12 +307,13 @@ append_awg_signatures() {
 }
 
 # Insert I1-I5 into [Interface] section of a peer conf (before the [Peer] line).
-# For AWG 2.0, I2-I5 are always written (even empty) so the Amnezia app detects AWG 2.0.
+# For AWG 2.0/3.0, I2-I5 are always written (even empty) so the Amnezia app
+# detects AWG 2.0+ rather than falling back to reporting 1.5.
 append_awg_signatures_to_interface() {
     local conf_file=$1
     local sig_block=""
     [[ -n "$AWG_I1" ]] && sig_block+="I1 = ${AWG_I1}"$'\n'
-    if [[ "${AWG_VERSION}" == "2.0" ]]; then
+    if [[ "${AWG_VERSION}" == "2.0" || "${AWG_VERSION}" == "3.0" ]]; then
         sig_block+="I2 = ${AWG_I2}"$'\n'
         sig_block+="I3 = ${AWG_I3}"$'\n'
         sig_block+="I4 = ${AWG_I4}"$'\n'
@@ -204,6 +325,40 @@ append_awg_signatures_to_interface() {
         [[ -n "$AWG_I5" ]] && sig_block+="I5 = ${AWG_I5}"$'\n'
     fi
     [[ -z "$sig_block" ]] && return 0
+    local tmp
+    tmp=$(awk -v block="$sig_block" '
+        /^\[Peer\]/ && !done { printf "%s", block; done=1 }
+        { print }
+    ' "$conf_file")
+    printf '%s\n' "$tmp" > "$conf_file"
+}
+
+# Append AWG 3.0 params to the server conf (called before any [Peer] section exists)
+append_awg3_params() {
+    local conf_file=$1
+    [[ "${AWG_VERSION}" != "3.0" ]] && return 0
+    cat >> "$conf_file" <<EOF
+HeaderProtectionKey = ${AWG_HEADER_PROTECTION_KEY}
+ContentPaddingAddition = ${AWG_CONTENT_PADDING}
+RekeyAfterTime = ${AWG_REKEY_AFTER_TIME}
+RekeyTimeout = ${AWG_REKEY_TIMEOUT}
+RejectAfterTime = ${AWG_REJECT_AFTER_TIME}
+KeepaliveTimeout = ${AWG_KEEPALIVE_TIMEOUT}
+MaxHandshakeAttempts = ${AWG_MAX_HANDSHAKE_ATTEMPTS}
+EOF
+}
+
+# Insert AWG 3.0 params into the [Interface] section of a peer conf (before the [Peer] line)
+append_awg3_params_to_interface() {
+    local conf_file=$1
+    [[ "${AWG_VERSION}" != "3.0" ]] && return 0
+    local sig_block="HeaderProtectionKey = ${AWG_HEADER_PROTECTION_KEY}"$'\n'
+    sig_block+="ContentPaddingAddition = ${AWG_CONTENT_PADDING}"$'\n'
+    sig_block+="RekeyAfterTime = ${AWG_REKEY_AFTER_TIME}"$'\n'
+    sig_block+="RekeyTimeout = ${AWG_REKEY_TIMEOUT}"$'\n'
+    sig_block+="RejectAfterTime = ${AWG_REJECT_AFTER_TIME}"$'\n'
+    sig_block+="KeepaliveTimeout = ${AWG_KEEPALIVE_TIMEOUT}"$'\n'
+    sig_block+="MaxHandshakeAttempts = ${AWG_MAX_HANDSHAKE_ATTEMPTS}"$'\n'
     local tmp
     tmp=$(awk -v block="$sig_block" '
         /^\[Peer\]/ && !done { printf "%s", block; done=1 }
@@ -229,6 +384,8 @@ $(cat /config/templates/server.conf)
 DUDE"
     # Append I1-I5 signature packets to server conf
     append_awg_signatures /config/wg_confs/wg0.conf
+    # Append AWG 3.0 params to server conf (no-op unless AWG_VERSION=3.0)
+    append_awg3_params /config/wg_confs/wg0.conf
     for i in "${PEERS_ARRAY[@]}"; do
         if [[ ! "${i}" =~ ^[[:alnum:]]+$ ]]; then
             echo "**** Peer ${i} contains non-alphanumeric characters and thus will be skipped. No config for peer ${i} will be generated. ****"
@@ -266,6 +423,8 @@ $(cat /config/templates/peer.conf)
 DUDE"
                 # Insert I1-I5 into [Interface] section of peer conf
                 append_awg_signatures_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
+                # Insert AWG 3.0 params into [Interface] section (no-op unless AWG_VERSION=3.0)
+                append_awg3_params_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
                 # add peer info to server conf with presharedkey
                 cat <<DUDE >> /config/wg_confs/wg0.conf
 [Peer]
@@ -282,6 +441,8 @@ $(sed '/PresharedKey/d' "/config/templates/peer.conf")
 DUDE"
                 # Insert I1-I5 into [Interface] section of peer conf
                 append_awg_signatures_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
+                # Insert AWG 3.0 params into [Interface] section (no-op unless AWG_VERSION=3.0)
+                append_awg3_params_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
                 # add peer info to server conf without presharedkey
                 cat <<DUDE >> /config/wg_confs/wg0.conf
 [Peer]
@@ -349,6 +510,13 @@ ORIG_AWG_I2="$AWG_I2"
 ORIG_AWG_I3="$AWG_I3"
 ORIG_AWG_I4="$AWG_I4"
 ORIG_AWG_I5="$AWG_I5"
+ORIG_AWG_HEADER_PROTECTION_KEY="$AWG_HEADER_PROTECTION_KEY"
+ORIG_AWG_CONTENT_PADDING="$AWG_CONTENT_PADDING"
+ORIG_AWG_REKEY_AFTER_TIME="$AWG_REKEY_AFTER_TIME"
+ORIG_AWG_REKEY_TIMEOUT="$AWG_REKEY_TIMEOUT"
+ORIG_AWG_REJECT_AFTER_TIME="$AWG_REJECT_AFTER_TIME"
+ORIG_AWG_KEEPALIVE_TIMEOUT="$AWG_KEEPALIVE_TIMEOUT"
+ORIG_AWG_MAX_HANDSHAKE_ATTEMPTS="$AWG_MAX_HANDSHAKE_ATTEMPTS"
 DUDE
 }
 
@@ -423,7 +591,14 @@ if [[ -n "$PEERS" ]]; then
            [[ "$AWG_I2" != "$ORIG_AWG_I2" ]] || \
            [[ "$AWG_I3" != "$ORIG_AWG_I3" ]] || \
            [[ "$AWG_I4" != "$ORIG_AWG_I4" ]] || \
-           [[ "$AWG_I5" != "$ORIG_AWG_I5" ]]; then
+           [[ "$AWG_I5" != "$ORIG_AWG_I5" ]] || \
+           [[ "$AWG_HEADER_PROTECTION_KEY" != "$ORIG_AWG_HEADER_PROTECTION_KEY" ]] || \
+           [[ "$AWG_CONTENT_PADDING" != "$ORIG_AWG_CONTENT_PADDING" ]] || \
+           [[ "$AWG_REKEY_AFTER_TIME" != "$ORIG_AWG_REKEY_AFTER_TIME" ]] || \
+           [[ "$AWG_REKEY_TIMEOUT" != "$ORIG_AWG_REKEY_TIMEOUT" ]] || \
+           [[ "$AWG_REJECT_AFTER_TIME" != "$ORIG_AWG_REJECT_AFTER_TIME" ]] || \
+           [[ "$AWG_KEEPALIVE_TIMEOUT" != "$ORIG_AWG_KEEPALIVE_TIMEOUT" ]] || \
+           [[ "$AWG_MAX_HANDSHAKE_ATTEMPTS" != "$ORIG_AWG_MAX_HANDSHAKE_ATTEMPTS" ]]; then
             echo "**** Server related environment variables changed, regenerating 1 server and ${PEERS} peer/client confs ****"
             generate_confs
             save_vars

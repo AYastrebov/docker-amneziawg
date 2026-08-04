@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- AWG 3.0 protocol support (`AWG_VERSION=3.0`): HeaderProtectionKey, ContentPaddingAddition and randomized protocol timers (RekeyAfterTime, RekeyTimeout, RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts), auto-generated with env overrides
 - Initial Docker container for AmneziaWG
 - Multi-stage Docker build with Go compilation
 - Pre-compiled AmneziaWG tools integration
@@ -19,7 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-architecture support (amd64, arm64)
 
 ### Changed
+- amneziawg-tools updated to v3.0.20260730, the first release with AWG 3.0 config parsing
 - Updated to use GitHub Packages for pre-built images
+
+### Fixed
+- `/config/server/awg_params` was never written on a fresh install (the directory did not exist yet), so every container restart regenerated all AWG obfuscation parameters and invalidated previously distributed peer configs
 
 ### Security
 - Implemented security best practices in container design
