@@ -62,7 +62,7 @@ Both accept `on`/`off` and work with **any** `AWG_VERSION`, so `2.0` + `AWG_RAND
 
 `AWG_DISABLE_COOKIES` is never turned on implicitly, including under `3.1` — it is a security trade the user should make deliberately.
 
-**Kernel datapath caveat.** The bundled userspace `amneziawg-go` is a 3.1 build and always accepts these keys. The host `amneziawg` kernel module may not be: check `cat /sys/module/amneziawg/version` and require ≥ 3.1. On an older module `awg setconf` fails with `Line unrecognized` and the tunnel does not come up. The container warns at startup when it detects this.
+**Kernel datapath caveat.** The bundled userspace `amneziawg-go` is a 3.1 build and always accepts these keys. The host `amneziawg` kernel module may not be: check `cat /sys/module/amneziawg/version` and require ≥ 3.1. On an older module the bundled `awg` parses the keys and the kernel refuses them, so `awg-quick` fails with `Unable to modify interface: Invalid argument` and the tunnel does not come up. (`Line unrecognized` is what older *userspace* tools report instead — not applicable inside this container.) The container warns at startup when it can read a numeric version from that file, and stays silent otherwise, so check it yourself rather than treating no warning as an all-clear.
 
 ## Parameter constraints (full table)
 

@@ -107,7 +107,9 @@ cat /sys/module/amneziawg/version   # need >= 3.1
 docker logs <container> | grep -i "kernel module"
 ```
 
-The container warns about this at startup. Two fixes:
+The container warns about this at startup, but the check is best-effort: it stays silent when `/sys/module/amneziawg/version` is missing or holds a non-numeric string (`v3.1.0`, a git-describe version), rather than firing a false alarm on a module that is actually fine. Absence of a warning is not proof the module is new enough — read the version yourself as above.
+
+Two fixes:
 
 1. Upgrade the host module — `apt install --only-upgrade amneziawg-dkms` (or reinstall the DKMS package), then reboot or reload the module.
 2. Drop the switches: set `AWG_RANDOM_TRAILERS=off` and `AWG_DISABLE_COOKIES=off` and restart. The rest of the AWG parameter set works on older modules, so there is no need to leave `AWG_VERSION=3.1`.

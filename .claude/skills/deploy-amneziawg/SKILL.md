@@ -128,7 +128,9 @@ Ask the user only:
 
    Both switches also work with any version — `AWG_VERSION=2.0` plus `AWG_RANDOM_TRAILERS=on` is valid if the clients support it.
 
-   If the host will use the **kernel datapath**, 3.1 switches need the `amneziawg` kernel module at v3.1 or newer. Check with `cat /sys/module/amneziawg/version`. On an older module `awg setconf` rejects the config with `Line unrecognized` and the tunnel never comes up; the container warns about this at startup.
+   If the host will use the **kernel datapath**, 3.1 switches need the `amneziawg` kernel module at v3.1 or newer. Check with `cat /sys/module/amneziawg/version`. On an older module the bundled `awg` parses the keys and the *kernel* refuses them, so `awg-quick` fails with `Unable to modify interface: Invalid argument` and the tunnel never comes up. (`Line unrecognized` is the different failure you get from userspace tools older than 3.1, which you would only meet outside this container.)
+
+   The container warns at startup when it can read a numeric version from that file, but stays silent on a missing or non-numeric one — so run the check yourself rather than relying on the warning.
 
 2. **Override randoms?** Offer three modes:
    - **Auto (recommended)** — leave `AWG_*` env vars unset; container randomizes on first boot.
