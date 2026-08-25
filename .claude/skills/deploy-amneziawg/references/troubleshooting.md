@@ -91,6 +91,41 @@ H2 = 1145769205-1195769205
 
 If they're single integers, `AWG_VERSION` was inferred as 1.5. Either explicitly set `AWG_VERSION=2.0` or check that the user didn't pass single-integer overrides for H1-H4.
 
+## Tunnel fails to start after enabling the AWG 3.1 switches
+
+Two different errors, two different causes:
+
+| Error from `awg-quick` | Who rejected it |
+|---|---|
+| `Unable to modify interface: Invalid argument` | The **kernel module** — the bundled `awg` parsed the key fine and the kernel refused it over netlink. This is the case inside this container, whose tools are pinned at 3.1 |
+| `Line unrecognized: RandomTrailers` | The **userspace tools** — an `awg` build older than 3.1 does not know the key at all. Only relevant outside this container, e.g. on a client host |
+
+With `AWG_RANDOM_TRAILERS` or `AWG_DISABLE_COOKIES` set, the first one means the host `amneziawg` **kernel module** predates 3.1:
+
+```bash
+cat /sys/module/amneziawg/version   # need >= 3.1
+docker logs <container> | grep -i "kernel module"
+```
+
+The container warns about this at startup, but the check is best-effort: it stays silent when `/sys/module/amneziawg/version` is missing or holds a non-numeric string (`v3.1.0`, a git-describe version), rather than firing a false alarm on a module that is actually fine. Absence of a warning is not proof the module is new enough — read the version yourself as above.
+
+Two fixes:
+
+1. Upgrade the host module — `apt install --only-upgrade amneziawg-dkms` (or reinstall the DKMS package), then reboot or reload the module.
+2. Drop the switches: set `AWG_RANDOM_TRAILERS=off` and `AWG_DISABLE_COOKIES=off` and restart. The rest of the AWG parameter set works on older modules, so there is no need to leave `AWG_VERSION=3.1`.
+
+   Removing the variables entirely is **not** enough — like every other `AWG_*` setting they are restored from `/config/server/awg_params`, so an absent variable means "reuse the saved value". An empty value does not work either: s6 drops empty variables from `container_environment`, so the script sees it as absent. `off` is the one that works, and it omits the key from the config rather than writing `= off`, which is what an old module needs.
+
+Note that the tunnel fails **closed** here — nothing comes up, rather than one option being silently ignored.
+
+## Peers on AWG 3.1 can't connect, server looks fine
+
+`RandomTrailers` changes the receive path as well as the send path. A peer without it expects handshake packets of exactly one length and drops the padded ones. It must be on for the server **and** every peer, or for none of them.
+
+The container writes it into every conf it generates, so container-generated peers are consistent automatically. Suspect this when a peer conf was hand-written, carried over from an older deployment, or used with a client that ignores unknown `[Interface]` keys.
+
+Also check the client actually supports 3.1 — an AmneziaVPN app or `amneziawg` build older than 3.1 will not parse the key.
+
 ## QR code not in logs
 
 `LOG_CONFS=true` must be set. By default it's `true`, but if the user disabled it:

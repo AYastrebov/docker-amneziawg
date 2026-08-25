@@ -39,14 +39,55 @@ fi
 #   "3.0"           - AWG 2.0 plus HeaderProtectionKey, ContentPaddingAddition
 #                     and randomized protocol timers. Requires 3.0-capable
 #                     clients; HeaderProtectionKey must match on all ends.
+#   "3.1"           - AWG 3.0 plus RandomTrailers. Upstream 3.1 is not a new
+#                     parameter set but two independent [Interface] switches;
+#                     this preset turns RandomTrailers on and leaves
+#                     DisableCookies off. Both are also settable on their own
+#                     via AWG_RANDOM_TRAILERS / AWG_DISABLE_COOKIES with any
+#                     AWG_VERSION. Requires 3.1-capable software on every end
+#                     that uses them.
 #   "1.5"           - Legacy mode: S3=S4=0, no I1-I5 signatures,
 #                     compatible with AmneziaVPN < 4.8.12.9
-AWG_VERSION=${AWG_VERSION:-2.0}
+# Left empty on purpose: load_awg_params restores the saved version first, so
+# recreating a container without AWG_VERSION keeps the deployment on the
+# version its peer confs were built for. The 2.0 default is applied in
+# generate_awg_params, after that restore. Defaulting here would make the
+# awg_params fallback dead code and silently rewrite every peer conf as 2.0.
+AWG_VERSION=${AWG_VERSION:-}
+
+# True when the version carries the AWG 3.x parameter set (header protection,
+# content padding, randomized timers).
+awg_has_3x_params() {
+    [[ "${AWG_VERSION}" == "3.0" || "${AWG_VERSION}" == "3.1" ]]
+}
+
+# True when the version carries the AWG 2.0+ feature set (H1-H4 ranges,
+# I1-I5 signatures). 3.x builds on 2.0, so it is included.
+awg_has_2x_features() {
+    [[ "${AWG_VERSION}" == "2.0" ]] || awg_has_3x_params
+}
 
 # Generate a random hex string of N bytes (2*N hex chars)
 random_hex() {
     local nbytes=$1
     head -c "$nbytes" /dev/urandom | od -An -tx1 | tr -d ' \n'
+}
+
+# Normalize an AWG 3.1 on/off switch. Empty stays empty, meaning the key is
+# not written at all. An unrecognized value is dropped with a warning rather
+# than passed through: awg setconf rejects the entire config on a bad value,
+# which would take the tunnel down instead of degrading one option.
+normalize_awg_switch() {
+    local name=$1 value=$2
+    case "${value,,}" in
+        "")         printf '' ;;
+        on|off)     printf '%s' "${value,,}" ;;
+        true|1|yes) printf 'on' ;;
+        false|0|no) printf 'off' ;;
+        *)
+            echo "**** WARNING: ${name}=${value} is not a valid on/off value - ignoring ****" >&2
+            printf '' ;;
+    esac
 }
 
 # Generate default I1 signature for AWG 2.0
@@ -118,6 +159,9 @@ generate_awg3_params() {
 
 # Generate random AWG obfuscation parameters if not set
 generate_awg_params() {
+    # Applied here rather than at the top of the script so load_awg_params gets
+    # a chance to restore a previously saved version first.
+    AWG_VERSION=${AWG_VERSION:-2.0}
     echo "**** AmneziaWG version: ${AWG_VERSION} ****"
 
     # Core parameters (all versions)
@@ -127,15 +171,15 @@ generate_awg_params() {
     AWG_S1=${AWG_S1:-$(shuf -i 15-150 -n 1)}
     AWG_S2=${AWG_S2:-$(shuf -i 15-150 -n 1)}
 
-    if [[ "${AWG_VERSION}" == "2.0" || "${AWG_VERSION}" == "3.0" ]]; then
-        # AWG 2.0/3.0: H1-H4 as non-overlapping range pairs (quadrant strategy, ~50M width each).
+    if awg_has_2x_features; then
+        # AWG 2.0/3.x: H1-H4 as non-overlapping range pairs (quadrant strategy, ~50M width each).
         # Range format (e.g. "90666522-140666522") is required for the Amnezia app to detect AWG 2.0+.
         _h1_lo=$(shuf -i 5-486870911 -n 1);          AWG_H1=${AWG_H1:-${_h1_lo}-$((_h1_lo + 50000000))}
         _h2_lo=$(shuf -i 536870912-1023741823 -n 1);  AWG_H2=${AWG_H2:-${_h2_lo}-$((_h2_lo + 50000000))}
         _h3_lo=$(shuf -i 1073741824-1560612735 -n 1); AWG_H3=${AWG_H3:-${_h3_lo}-$((_h3_lo + 50000000))}
         _h4_lo=$(shuf -i 1610612736-2097483647 -n 1); AWG_H4=${AWG_H4:-${_h4_lo}-$((_h4_lo + 50000000))}
-        if [[ "${AWG_VERSION}" == "3.0" ]]; then
-            # AWG 3.0: S1-S4 must all be >= 12 — the HeaderProtection nonce is read
+        if awg_has_3x_params; then
+            # AWG 3.x: S1-S4 must all be >= 12 — the HeaderProtection nonce is read
             # from the first 12 bytes of the S-padding (amneziawg-go rejects the
             # config otherwise). S4 stays <= 32 per protocol cap.
             AWG_S3=${AWG_S3:-$(shuf -i 12-55 -n 1)}
@@ -161,10 +205,10 @@ generate_awg_params() {
         AWG_I5=${AWG_I5:-}
     fi
 
-    if [[ "${AWG_VERSION}" == "3.0" ]]; then
+    if awg_has_3x_params; then
         generate_awg3_params
     else
-        # Not 3.0: keep 3.0 params empty (e.g. after switching versions down)
+        # Not 3.x: keep 3.x params empty (e.g. after switching versions down)
         AWG_HEADER_PROTECTION_KEY=""
         AWG_CONTENT_PADDING=""
         AWG_REKEY_AFTER_TIME=""
@@ -172,6 +216,27 @@ generate_awg_params() {
         AWG_REJECT_AFTER_TIME=""
         AWG_KEEPALIVE_TIMEOUT=""
         AWG_MAX_HANDSHAKE_ATTEMPTS=""
+    fi
+
+    # AWG 3.1 interface switches. Upstream treats these as independent of the
+    # parameter set, so they are honoured with any AWG_VERSION; AWG_VERSION=3.1
+    # is simply a preset that turns RandomTrailers on. DisableCookies stays
+    # opt-in — it gives up WireGuard's built-in DoS mitigation and, unlike
+    # RandomTrailers, does not have to match between ends.
+    # Normalize what was actually asked for, then let the 3.1 preset fill in a
+    # default. Only the explicit value is persisted below: a RandomTrailers
+    # that came from AWG_VERSION=3.1 must not outlive a downgrade to 2.0, or a
+    # user dropping back to fix an old client would still emit a key that
+    # client cannot parse.
+    local _rt_explicit _dc_explicit
+    _rt_explicit=$(normalize_awg_switch AWG_RANDOM_TRAILERS "${AWG_RANDOM_TRAILERS:-}")
+    _dc_explicit=$(normalize_awg_switch AWG_DISABLE_COOKIES "${AWG_DISABLE_COOKIES:-}")
+    AWG_RANDOM_TRAILERS="${_rt_explicit}"
+    AWG_DISABLE_COOKIES="${_dc_explicit}"
+    # "off" is a real value here, not an absence, so it survives s6 and beats
+    # both the saved value and this preset.
+    if [[ "${AWG_VERSION}" == "3.1" ]]; then
+        AWG_RANDOM_TRAILERS=${AWG_RANDOM_TRAILERS:-on}
     fi
 
     # Save params to file for persistence.
@@ -204,6 +269,8 @@ AWG_REKEY_TIMEOUT=$AWG_REKEY_TIMEOUT
 AWG_REJECT_AFTER_TIME=$AWG_REJECT_AFTER_TIME
 AWG_KEEPALIVE_TIMEOUT=$AWG_KEEPALIVE_TIMEOUT
 AWG_MAX_HANDSHAKE_ATTEMPTS=$AWG_MAX_HANDSHAKE_ATTEMPTS
+AWG_RANDOM_TRAILERS=$_rt_explicit
+AWG_DISABLE_COOKIES=$_dc_explicit
 EOF
 
     echo "**** AWG Obfuscation Parameters ****"
@@ -215,12 +282,15 @@ EOF
     else
         echo "  I1-I5 Custom Protocol Signatures: disabled (AWG 1.5 mode)"
     fi
-    if [[ "${AWG_VERSION}" == "3.0" ]]; then
+    if awg_has_3x_params; then
         echo "  HeaderProtectionKey: set"
         echo "  ContentPaddingAddition=$AWG_CONTENT_PADDING"
         echo "  RekeyAfterTime=$AWG_REKEY_AFTER_TIME, RekeyTimeout=$AWG_REKEY_TIMEOUT"
         echo "  RejectAfterTime=$AWG_REJECT_AFTER_TIME, KeepaliveTimeout=$AWG_KEEPALIVE_TIMEOUT"
         echo "  MaxHandshakeAttempts=$AWG_MAX_HANDSHAKE_ATTEMPTS"
+    fi
+    if [[ -n "$AWG_RANDOM_TRAILERS" ]] || [[ -n "$AWG_DISABLE_COOKIES" ]]; then
+        echo "  AWG 3.1 options: RandomTrailers=${AWG_RANDOM_TRAILERS:-unset}, DisableCookies=${AWG_DISABLE_COOKIES:-unset}"
     fi
 
     # Validation warnings
@@ -243,8 +313,8 @@ EOF
         done
     fi
 
-    # AWG 3.0 validation warnings
-    if [[ "${AWG_VERSION}" == "3.0" ]]; then
+    # AWG 3.x validation warnings
+    if awg_has_3x_params; then
         # S1-S4 >= 12 is a hard requirement of HeaderProtectionKey
         if [[ -n "${AWG_HEADER_PROTECTION_KEY}" ]]; then
             for _s_name in AWG_S1 AWG_S2 AWG_S3 AWG_S4; do
@@ -293,6 +363,8 @@ load_awg_params() {
         AWG_REJECT_AFTER_TIME=${AWG_REJECT_AFTER_TIME:-$(grep "^AWG_REJECT_AFTER_TIME=" /config/server/awg_params | cut -d= -f2-)}
         AWG_KEEPALIVE_TIMEOUT=${AWG_KEEPALIVE_TIMEOUT:-$(grep "^AWG_KEEPALIVE_TIMEOUT=" /config/server/awg_params | cut -d= -f2-)}
         AWG_MAX_HANDSHAKE_ATTEMPTS=${AWG_MAX_HANDSHAKE_ATTEMPTS:-$(grep "^AWG_MAX_HANDSHAKE_ATTEMPTS=" /config/server/awg_params | cut -d= -f2-)}
+        AWG_RANDOM_TRAILERS=${AWG_RANDOM_TRAILERS:-$(grep "^AWG_RANDOM_TRAILERS=" /config/server/awg_params | cut -d= -f2)}
+        AWG_DISABLE_COOKIES=${AWG_DISABLE_COOKIES:-$(grep "^AWG_DISABLE_COOKIES=" /config/server/awg_params | cut -d= -f2)}
     fi
 }
 
@@ -313,7 +385,7 @@ append_awg_signatures_to_interface() {
     local conf_file=$1
     local sig_block=""
     [[ -n "$AWG_I1" ]] && sig_block+="I1 = ${AWG_I1}"$'\n'
-    if [[ "${AWG_VERSION}" == "2.0" || "${AWG_VERSION}" == "3.0" ]]; then
+    if awg_has_2x_features; then
         sig_block+="I2 = ${AWG_I2}"$'\n'
         sig_block+="I3 = ${AWG_I3}"$'\n'
         sig_block+="I4 = ${AWG_I4}"$'\n'
@@ -336,7 +408,7 @@ append_awg_signatures_to_interface() {
 # Append AWG 3.0 params to the server conf (called before any [Peer] section exists)
 append_awg3_params() {
     local conf_file=$1
-    [[ "${AWG_VERSION}" != "3.0" ]] && return 0
+    awg_has_3x_params || return 0
     cat >> "$conf_file" <<EOF
 HeaderProtectionKey = ${AWG_HEADER_PROTECTION_KEY}
 ContentPaddingAddition = ${AWG_CONTENT_PADDING}
@@ -351,7 +423,7 @@ EOF
 # Insert AWG 3.0 params into the [Interface] section of a peer conf (before the [Peer] line)
 append_awg3_params_to_interface() {
     local conf_file=$1
-    [[ "${AWG_VERSION}" != "3.0" ]] && return 0
+    awg_has_3x_params || return 0
     local sig_block="HeaderProtectionKey = ${AWG_HEADER_PROTECTION_KEY}"$'\n'
     sig_block+="ContentPaddingAddition = ${AWG_CONTENT_PADDING}"$'\n'
     sig_block+="RekeyAfterTime = ${AWG_REKEY_AFTER_TIME}"$'\n'
@@ -361,6 +433,77 @@ append_awg3_params_to_interface() {
     sig_block+="MaxHandshakeAttempts = ${AWG_MAX_HANDSHAKE_ATTEMPTS}"$'\n'
     local tmp
     tmp=$(awk -v block="$sig_block" '
+        /^\[Peer\]/ && !done { printf "%s", block; done=1 }
+        { print }
+    ' "$conf_file")
+    printf '%s\n' "$tmp" > "$conf_file"
+}
+
+# Warn when the AWG 3.1 switches are requested against a kernel module that
+# predates them. awg setconf rejects the entire config with "Line unrecognized"
+# in that case, so the tunnel fails to come up rather than losing one option.
+# The bundled userspace amneziawg-go is a 3.1 build and always supports them.
+check_awg31_kernel_support() {
+    [[ "${AWG_RANDOM_TRAILERS}" == "on" || "${AWG_DISABLE_COOKIES}" == "on" ]] || return 0
+    [[ -n "${WG_QUICK_USERSPACE_IMPLEMENTATION:-}" ]] && return 0
+    [[ -r /sys/module/amneziawg/version ]] || return 0
+    local modver major minor
+    modver=$(cat /sys/module/amneziawg/version)
+    major=${modver%%.*}
+    minor=${modver#*.}; minor=${minor%%.*}
+    # Stay silent on anything we cannot read as a number ("v3.1.0", a
+    # git-describe string, a distro suffix). In bash arithmetic a non-numeric
+    # word is resolved as a variable name and evaluates to 0, which would make
+    # a perfectly capable module look ancient and fire a false warning.
+    [[ "${major}" =~ ^[0-9]+$ && "${minor}" =~ ^[0-9]+$ ]] || return 0
+    if (( major < 3 || (major == 3 && minor < 1) )); then
+        echo "**** WARNING: RandomTrailers/DisableCookies need amneziawg kernel module 3.1 or newer, but ${modver} is loaded ****"
+        echo "****          The bundled awg parses these keys, so the failure comes from the kernel: awg-quick reports      ****"
+        echo "****          \"Unable to modify interface: Invalid argument\" and the tunnel does not come up.                ****"
+        echo "****          Upgrade the host module (amneziawg-dkms), or set AWG_RANDOM_TRAILERS=off and                   ****"
+        echo "****          AWG_DISABLE_COOKIES=off, which omits the keys entirely.                                         ****"
+    fi
+}
+
+# Build the AWG 3.1 [Interface] switch block into the caller's BLOCK_OUT
+# variable, or leave it empty if neither switch is set. These are independent
+# of AWG_VERSION, so unlike the 3.x parameter block they are written for any
+# version the user pairs them with.
+#
+# The block is returned via a variable rather than stdout on purpose: command
+# substitution strips trailing newlines, which would glue the last option onto
+# the following [Peer] line and make awg setconf reject the whole config.
+# Only "on" emits a key. "off" is deliberately written as an absent key rather
+# than "= off": off is already the endpoint default, so the two are functionally
+# identical, and omitting it keeps the config parseable by an older amneziawg
+# that does not know the key at all. That makes "off" the way out of a tunnel
+# broken by these switches — an empty value cannot serve that role, because s6
+# drops empty variables from container_environment and the script would see it
+# as absent, i.e. "reuse the saved value".
+awg31_options_block() {
+    BLOCK_OUT=""
+    [[ "${AWG_RANDOM_TRAILERS}" == "on" ]] && BLOCK_OUT+="RandomTrailers = on"$'\n'
+    [[ "${AWG_DISABLE_COOKIES}" == "on" ]] && BLOCK_OUT+="DisableCookies = on"$'\n'
+}
+
+# Append the AWG 3.1 options to the server conf (called before any [Peer] exists)
+append_awg31_options() {
+    local conf_file=$1
+    local BLOCK_OUT
+    awg31_options_block
+    [[ -z "${BLOCK_OUT}" ]] && return 0
+    printf '%s' "${BLOCK_OUT}" >> "$conf_file"
+}
+
+# Insert the AWG 3.1 options into the [Interface] section of a peer conf
+# (before the [Peer] line)
+append_awg31_options_to_interface() {
+    local conf_file=$1
+    local BLOCK_OUT
+    awg31_options_block
+    [[ -z "${BLOCK_OUT}" ]] && return 0
+    local tmp
+    tmp=$(awk -v block="${BLOCK_OUT}" '
         /^\[Peer\]/ && !done { printf "%s", block; done=1 }
         { print }
     ' "$conf_file")
@@ -384,8 +527,10 @@ $(cat /config/templates/server.conf)
 DUDE"
     # Append I1-I5 signature packets to server conf
     append_awg_signatures /config/wg_confs/wg0.conf
-    # Append AWG 3.0 params to server conf (no-op unless AWG_VERSION=3.0)
+    # Append AWG 3.x params to server conf (no-op unless AWG_VERSION is 3.0/3.1)
     append_awg3_params /config/wg_confs/wg0.conf
+    # Append AWG 3.1 switches to server conf (no-op unless either is set)
+    append_awg31_options /config/wg_confs/wg0.conf
     for i in "${PEERS_ARRAY[@]}"; do
         if [[ ! "${i}" =~ ^[[:alnum:]]+$ ]]; then
             echo "**** Peer ${i} contains non-alphanumeric characters and thus will be skipped. No config for peer ${i} will be generated. ****"
@@ -423,8 +568,10 @@ $(cat /config/templates/peer.conf)
 DUDE"
                 # Insert I1-I5 into [Interface] section of peer conf
                 append_awg_signatures_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
-                # Insert AWG 3.0 params into [Interface] section (no-op unless AWG_VERSION=3.0)
+                # Insert AWG 3.x params into [Interface] section (no-op unless AWG_VERSION is 3.0/3.1)
                 append_awg3_params_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
+                # Insert AWG 3.1 switches into [Interface] section (no-op unless either is set)
+                append_awg31_options_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
                 # add peer info to server conf with presharedkey
                 cat <<DUDE >> /config/wg_confs/wg0.conf
 [Peer]
@@ -441,8 +588,10 @@ $(sed '/PresharedKey/d' "/config/templates/peer.conf")
 DUDE"
                 # Insert I1-I5 into [Interface] section of peer conf
                 append_awg_signatures_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
-                # Insert AWG 3.0 params into [Interface] section (no-op unless AWG_VERSION=3.0)
+                # Insert AWG 3.x params into [Interface] section (no-op unless AWG_VERSION is 3.0/3.1)
                 append_awg3_params_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
+                # Insert AWG 3.1 switches into [Interface] section (no-op unless either is set)
+                append_awg31_options_to_interface "/config/${PEER_ID}/${PEER_ID}.conf"
                 # add peer info to server conf without presharedkey
                 cat <<DUDE >> /config/wg_confs/wg0.conf
 [Peer]
@@ -517,6 +666,8 @@ ORIG_AWG_REKEY_TIMEOUT="$AWG_REKEY_TIMEOUT"
 ORIG_AWG_REJECT_AFTER_TIME="$AWG_REJECT_AFTER_TIME"
 ORIG_AWG_KEEPALIVE_TIMEOUT="$AWG_KEEPALIVE_TIMEOUT"
 ORIG_AWG_MAX_HANDSHAKE_ATTEMPTS="$AWG_MAX_HANDSHAKE_ATTEMPTS"
+ORIG_AWG_RANDOM_TRAILERS="$AWG_RANDOM_TRAILERS"
+ORIG_AWG_DISABLE_COOKIES="$AWG_DISABLE_COOKIES"
 DUDE
 }
 
@@ -558,6 +709,7 @@ if [[ -n "$PEERS" ]]; then
     # Load saved AWG params as fallback, then generate/validate
     load_awg_params
     generate_awg_params
+    check_awg31_kernel_support
 
     if [[ ! -f /config/wg_confs/wg0.conf ]]; then
         echo "**** No wg0.conf found (maybe an initial install), generating 1 server and ${PEERS} peer/client confs ****"
@@ -598,7 +750,9 @@ if [[ -n "$PEERS" ]]; then
            [[ "$AWG_REKEY_TIMEOUT" != "$ORIG_AWG_REKEY_TIMEOUT" ]] || \
            [[ "$AWG_REJECT_AFTER_TIME" != "$ORIG_AWG_REJECT_AFTER_TIME" ]] || \
            [[ "$AWG_KEEPALIVE_TIMEOUT" != "$ORIG_AWG_KEEPALIVE_TIMEOUT" ]] || \
-           [[ "$AWG_MAX_HANDSHAKE_ATTEMPTS" != "$ORIG_AWG_MAX_HANDSHAKE_ATTEMPTS" ]]; then
+           [[ "$AWG_MAX_HANDSHAKE_ATTEMPTS" != "$ORIG_AWG_MAX_HANDSHAKE_ATTEMPTS" ]] || \
+           [[ "$AWG_RANDOM_TRAILERS" != "$ORIG_AWG_RANDOM_TRAILERS" ]] || \
+           [[ "$AWG_DISABLE_COOKIES" != "$ORIG_AWG_DISABLE_COOKIES" ]]; then
             echo "**** Server related environment variables changed, regenerating 1 server and ${PEERS} peer/client confs ****"
             generate_confs
             save_vars

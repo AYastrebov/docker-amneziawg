@@ -12,7 +12,7 @@ Practically: if a user is following upstream docs by hand, they'll have to fill 
 
 **The default behavior is correct for almost everyone.** If the user doesn't have strong opinions:
 
-- Set `AWG_VERSION=2.0` (or omit — `2.0` is the default).
+- Set `AWG_VERSION=2.0` (or omit — `2.0` is the default). Move to `3.0`/`3.1` only when every client is known to support it.
 - Leave **all** `AWG_*` parameters unset in `docker-compose.yml`.
 - The container generates valid random values on first start, respecting every constraint, and persists them to `/config/server/awg_params`. Restarts reuse the saved values.
 
@@ -21,7 +21,7 @@ Override only if:
 2. The user wants to back up the compose file alone (not the `config/` directory) and have the same params on rebuild — pin the values in compose.
 3. The user has a specific reason (custom CPS for a particular protocol disguise, matching a partner's setup, etc.).
 
-## AWG 2.0 vs 1.5
+## Version comparison
 
 | Feature | AWG 2.0 (default) | AWG 1.5 |
 |---|---|---|
@@ -32,6 +32,37 @@ Override only if:
 | DPI resistance | Strong (mimics QUIC, randomized padding everywhere) | Weaker (no CPS, no per-packet padding) |
 
 **Choose 1.5 only if** the user explicitly needs to support clients on AmneziaVPN < 4.8.12.9 — e.g., older Android devices stuck on an old Play Store version, or non-Amnezia third-party AWG clients that haven't implemented 2.0.
+
+### AWG 3.0 and 3.1
+
+`AWG_VERSION=3.0` adds a second parameter set on top of everything 2.0 does:
+
+| Param | Default (random) | Notes |
+|---|---|---|
+| `AWG_HEADER_PROTECTION_KEY` | 32 random bytes, base64 | Encrypts packet headers. **Must be identical on server and every client.** Requires S1-S4 ≥ 12 — the nonce is read from the first 12 bytes of the S-padding |
+| `AWG_CONTENT_PADDING` | `lo-hi` within 16-128 | Extra random padding per transport packet. `0` disables |
+| `AWG_REKEY_AFTER_TIME` | `lo-hi` within 100-145s | WireGuard default is 120 |
+| `AWG_REKEY_TIMEOUT` | `lo-hi` within 4-10s | Default 5 |
+| `AWG_REJECT_AFTER_TIME` | `lo-hi`, derived | Default 180. Must exceed RekeyAfterTime.hi, and KeepaliveTimeout.lo + RekeyTimeout.lo |
+| `AWG_KEEPALIVE_TIMEOUT` | `lo-hi` within 8-22s | Default 10 |
+| `AWG_MAX_HANDSHAKE_ATTEMPTS` | `lo-hi` within 12-28 | Default 18 |
+
+Timers are **ranges**, and each endpoint draws its own value from within the range — the two sides do not have to land on the same number. Only `HeaderProtectionKey` must match.
+
+`AWG_VERSION=3.1` is a preset: the 3.0 parameter set plus `AWG_RANDOM_TRAILERS=on`. AWG 3.1 itself is not a new parameter set upstream — it is two independent `[Interface]` booleans:
+
+| Env var | Effect | Must match on both ends |
+|---|---|:---:|
+| `AWG_RANDOM_TRAILERS` | Random-length trailer on handshake init/response/cookie-reply packets, so they lose their fixed length | **Yes** |
+| `AWG_DISABLE_COOKIES` | No cookie-reply messages under load, removing a distinctive probe response. Costs WireGuard's DoS mitigation | No |
+
+Both accept `on`/`off` and work with **any** `AWG_VERSION`, so `2.0` + `AWG_RANDOM_TRAILERS=on` is a valid combination. Only `on` writes a key; unset or `off` omits it entirely rather than writing `= off`.
+
+`off` is also the way to turn a switch back off — an absent variable means "reuse the saved value" from `/config/server/awg_params`, and an empty one is indistinguishable from absent because s6 drops empty variables from `container_environment`.
+
+`AWG_DISABLE_COOKIES` is never turned on implicitly, including under `3.1` — it is a security trade the user should make deliberately.
+
+**Kernel datapath caveat.** The bundled userspace `amneziawg-go` is a 3.1 build and always accepts these keys. The host `amneziawg` kernel module may not be: check `cat /sys/module/amneziawg/version` and require ≥ 3.1. On an older module the bundled `awg` parses the keys and the kernel refuses them, so `awg-quick` fails with `Unable to modify interface: Invalid argument` and the tunnel does not come up. (`Line unrecognized` is what older *userspace* tools report instead — not applicable inside this container.) The container warns at startup when it can read a numeric version from that file, and stays silent otherwise, so check it yourself rather than treating no warning as an all-clear.
 
 ## Parameter constraints (full table)
 
@@ -44,8 +75,8 @@ All values are integers unless noted.
 | `AWG_JMAX` | 2-1280 | 80-250 | Max junk packet size in bytes. |
 | `AWG_S1` | 0-1132 | 15-150 | Init packet padding. **S1 + 56 must ≠ S2** (otherwise looks like base WireGuard). |
 | `AWG_S2` | 0-1188 | 15-150 | Response packet padding. |
-| `AWG_S3` | 0-64 | 8-55 (2.0) / 0 (1.5) | Cookie message padding. |
-| `AWG_S4` | 0-32 | 4-27 (2.0) / 0 (1.5) | Transport packet padding. **Per-packet overhead — keep small** (every data packet pays this cost). |
+| `AWG_S3` | 0-64 | 8-55 (2.0) / 12-55 (3.x) / 0 (1.5) | Cookie message padding. |
+| `AWG_S4` | 0-32 | 4-27 (2.0) / 12-27 (3.x) / 0 (1.5) | Transport packet padding. **Per-packet overhead — keep small** (every data packet pays this cost). |
 | `AWG_H1`-`H4` | ≥ 5 | Quadrant ranges (2.0) / single ints (1.5) | All four must be unique. Values 1-4 are reserved for standard WireGuard header types. |
 | `AWG_I1`-`I5` | tag syntax string | QUIC Initial for I1 in 2.0, all empty in 1.5 | I1 must be set for I2-I5 to be meaningful. Tag syntax may contain `=`, parse with `cut -d= -f2-` not `-f2`. |
 

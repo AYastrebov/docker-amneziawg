@@ -43,7 +43,7 @@ services:
       # - SERVER_ALLOWEDIPS_PEER_laptop=192.168.1.0/24
 
       # ---- AmneziaWG Protocol Version ----
-      # - AWG_VERSION=2.0                   # "2.0" (default), "3.0" (header protection) or "1.5" for legacy clients
+      # - AWG_VERSION=2.0                   # "2.0" (default), "3.0" (header protection), "3.1" (3.0 + RandomTrailers) or "1.5" for legacy clients
 
       # ---- AmneziaWG Obfuscation (optional - random if not set) ----
       # - AWG_JC=4                          # Junk packet count (3-8 recommended)
@@ -65,7 +65,7 @@ services:
       # - AWG_I4=                                 # Optional fourth packet
       # - AWG_I5=                                 # Optional fifth packet
 
-      # ---- AWG 3.0 (only used when AWG_VERSION=3.0 - random if not set) ----
+      # ---- AWG 3.x (only used when AWG_VERSION=3.0 or 3.1 - random if not set) ----
       # Timers are "lo-hi" ranges; each side picks its own value from the range.
       # - AWG_HEADER_PROTECTION_KEY=            # Shared key, must match on server and all clients (needs S1-S4 >= 12)
       # - AWG_CONTENT_PADDING=32-96             # Extra padding per transport packet, bytes (0 disables)
@@ -74,6 +74,12 @@ services:
       # - AWG_REJECT_AFTER_TIME=180-200         # Keypair lifetime, seconds
       # - AWG_KEEPALIVE_TIMEOUT=10-18           # Keepalive interval when idle, seconds
       # - AWG_MAX_HANDSHAKE_ATTEMPTS=15-22      # Handshake retries before giving up
+
+      # ---- AWG 3.1 interface switches (work with any AWG_VERSION) ----
+      # Written to the server conf and every peer conf when set; unset = key not written.
+      # Only "on" writes the key; "off" omits it (off is the default anyway) and is how you turn a switch back off.
+      # - AWG_RANDOM_TRAILERS=on                # Random-length handshake packets. Defaults to "on" when AWG_VERSION=3.1. Must match on every end
+      # - AWG_DISABLE_COOKIES=on                # No cookie-reply under load. Always opt-in; gives up DoS mitigation. Need not match
 
       # ---- CoreDNS ----
       # - USE_COREDNS=true                  # Enable CoreDNS (auto in server mode)

@@ -51,6 +51,8 @@ services:
       - PERSISTENTKEEPALIVE_PEERS=all #optional
       - LOG_CONFS=true #optional
       # - AWG_VERSION=2.0 #optional
+      # - AWG_RANDOM_TRAILERS=on #optional
+      # - AWG_DISABLE_COOKIES=on #optional
     volumes:
       - ./config:/config
     ports:
@@ -142,7 +144,9 @@ docker run -d \
 | `-e SERVER_ALLOWEDIPS_PEER_X=` | Per-peer server AllowedIPs for site-to-site VPN |
 | `-e LOG_CONFS=true` | Show generated configs and QR codes in container logs |
 | `-e USE_COREDNS=true` | Enable or disable the built-in CoreDNS. Defaults to `true` in server mode and `false` in client mode. Auto-disables when port 53 is already bound, unless you set it explicitly. Setting it to `false` in server mode breaks DNS for peers on `PEERDNS=auto`, so point `PEERDNS` at a public resolver such as `1.1.1.1` if you do |
-| `-e AWG_VERSION=2.0` | Protocol version: `2.0` (default, full DPI evasion), `3.0` (header protection and randomized timers) or `1.5` (legacy) |
+| `-e AWG_VERSION=2.0` | Protocol version: `2.0` (default, full DPI evasion), `3.0` (header protection and randomized timers), `3.1` (3.0 plus `RandomTrailers`) or `1.5` (legacy) |
+| `-e AWG_RANDOM_TRAILERS=` | `on`/`off`. Pads handshake packets to a random length. Works with any `AWG_VERSION`; defaults to `on` under `3.1`. Must match on every end. `off` omits the key |
+| `-e AWG_DISABLE_COOKIES=` | `on`/`off`. Stops cookie-reply messages under load. Works with any `AWG_VERSION`; always opt-in. Does not need to match. `off` omits the key |
 | `-v /config` | Persistent config volume |
 | `--cap-add NET_ADMIN` | Required for tunnel management |
 | `--cap-add SYS_MODULE` | Usually unnecessary. The container does not load kernel modules, it only checks whether `wireguard`/`amneziawg` is already loaded on the host. Keep `SYS_MODULE` only on minimal hosts that do not auto-load iptables NAT modules |
@@ -155,15 +159,18 @@ docker run -d \
 |---------|-------------|
 | `2.0` (default) | Full DPI evasion with I1-I5 signatures. Requires AmneziaVPN app 4.8.12.9+ |
 | `3.0` | Adds header protection (`HeaderProtectionKey`), content padding and randomized protocol timers. Requires 3.0-capable clients, and `HeaderProtectionKey` must be identical on server and all clients |
+| `3.1` | Everything `3.0` generates, plus `RandomTrailers = on`. Requires 3.1-capable software on every end. `DisableCookies` stays off unless you ask for it |
 | `1.5` | Legacy compatibility with older clients. No I1-I5, S3=S4=0 |
 
 Set this with the `AWG_VERSION` environment variable. Every obfuscation value is randomized for you, so override them only to match an existing setup.
+
+Like the obfuscation parameters, the version is saved to `/config/server/awg_params` and restored when the variable is absent, so recreating a container from a compose file that no longer sets it keeps the deployment on the version its peer confs were built for.
 
 > [!IMPORTANT]
 > `AWG_VERSION=3.0` needs 3.0-capable software at both ends. The container handles its own side either way: it runs 3.0 in userspace with the bundled `amneziawg-go`, and switches to the kernel datapath automatically when a 3.0-capable module is loaded on the host. The generated config is the same in both cases. Your peers need an AmneziaVPN app or amneziawg build that supports 3.0.
 
 > [!NOTE]
-> There is no `AWG_VERSION=3.1`. AWG 3.1 added two independent `[Interface]` switches rather than a new parameter set, and the container does not generate them. See [AWG 3.1 interface options](#awg-31-interface-options).
+> `AWG_VERSION=3.1` is a convenience preset, not a distinct parameter set. Upstream AWG 3.1 added two independent `[Interface]` switches on top of 3.0, and you can set either one with any `AWG_VERSION`. See [AWG 3.1 interface options](#awg-31-interface-options).
 
 ## Obfuscation parameters
 
@@ -204,16 +211,39 @@ Generated only when `AWG_VERSION=3.0`. Timer values are `lo-hi` ranges and the e
 
 ### AWG 3.1 interface options
 
-The bundled `amneziawg-go` and `awg` are 3.1 builds, which accept two extra `[Interface]` booleans (`on` or `off`). They work with any `AWG_VERSION` and the container does not write them for you. Add them by hand to `/config/templates/server.conf` and `/config/templates/peer.conf`, anywhere above the `[Peer]` section, or to your own `.conf` files in client mode.
+AWG 3.1 added two `[Interface]` booleans (`on` or `off`) rather than a new parameter set. They are independent of each other and of `AWG_VERSION`, so you can pair either one with `2.0` or `3.0`.
 
-| Option | Effect | Must match on both ends |
-|--------|--------|:---:|
-| `RandomTrailers = on` | Appends a random number of random bytes to handshake initiation, response and cookie-reply packets, so those packets no longer have a fixed length. The trailer is drawn per packet to fill up to a 500-byte window | Yes |
-| `DisableCookies = on` | Stops the endpoint from answering with cookie-reply messages when it is under load, which removes a distinctive response to probing. You give up WireGuard's built-in DoS mitigation in exchange | No |
+| Option | Env var | Effect | Must match on both ends |
+|--------|---------|--------|:---:|
+| `RandomTrailers` | `AWG_RANDOM_TRAILERS` | Appends a random number of random bytes to handshake initiation, response and cookie-reply packets, so those packets no longer have a fixed length. The trailer is drawn per packet to fill up to a 500-byte window | Yes |
+| `DisableCookies` | `AWG_DISABLE_COOKIES` | Stops the endpoint from answering with cookie-reply messages when it is under load, which removes a distinctive response to probing. You give up WireGuard's built-in DoS mitigation in exchange | No |
 
-`RandomTrailers` changes the receive path as well as the send path. A peer without it expects handshake packets of exactly one length and drops the padded ones, so enable it on the server and every peer, or on none of them.
+The container writes whichever of these is `on` into the `[Interface]` block of the server conf and every peer conf, so both ends stay in step. Unset, or `off`, and the key is not written at all.
 
-Both options need 3.1-capable software wherever they are used: the bundled userspace `amneziawg-go`, or [kernel module](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module) v3.1.x on the host for the kernel datapath. Older `awg` builds reject the keys with `Line unrecognized`.
+`AWG_VERSION=3.1` is shorthand for the 3.0 parameter set plus `AWG_RANDOM_TRAILERS=on`. `DisableCookies` is never turned on for you: it trades away WireGuard's DoS mitigation, and since it does not have to match between ends it is a per-deployment call rather than part of a protocol mode. Set it explicitly if you want it:
+
+```yaml
+      - AWG_VERSION=3.1
+      - AWG_DISABLE_COOKIES=on
+```
+
+Setting a switch explicitly persists it like any other AWG parameter, so it survives a restart with the var removed. A switch that came only from the `3.1` preset does not: drop back to `AWG_VERSION=2.0` and `RandomTrailers` goes away with the rest of the 3.x keys, which is what you want when you are downgrading to get an older client connected again.
+
+Either switch also works on its own, with any version:
+
+```yaml
+      - AWG_VERSION=2.0
+      - AWG_RANDOM_TRAILERS=on
+```
+
+`RandomTrailers` changes the receive path as well as the send path. A peer without it expects handshake packets of exactly one length and drops the padded ones, so enable it on the server and every peer, or on none of them. Because the container writes it to every conf it generates, that holds automatically — but a peer conf you wrote by hand, or an older client, will not connect.
+
+Both options need 3.1-capable software wherever they are used: the bundled userspace `amneziawg-go`, or [kernel module](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module) v3.1.x on the host for the kernel datapath. On an older host module the tunnel fails to come up with `Unable to modify interface: Invalid argument` — the bundled `awg` parses the keys, and the kernel is what refuses them. (An `awg` build older than 3.1, which you would only meet outside this container, instead reports `Line unrecognized`.) The container reads `/sys/module/amneziawg/version` at startup and warns before either happens — but only when that file exists and holds a numeric version. A missing file, or a string it cannot read as a number (`v3.1.0`, a git-describe or distro-suffixed version), is passed over rather than guessed at, so no warning is not proof the module is new enough. Check it yourself if you are unsure.
+
+To turn a switch back off, set it to `off` rather than removing it — removing the variable means "reuse the saved value", the same as every other `AWG_*` setting. `off` omits the key from the generated configs rather than writing `= off`; since off is the endpoint default anyway the two are equivalent, and omitting it keeps the config readable by an older amneziawg that does not know the key at all. That makes `AWG_RANDOM_TRAILERS=off` the way to rescue a tunnel these switches have broken, without leaving `AWG_VERSION=3.1`.
+
+> [!NOTE]
+> Earlier versions of this image did not generate these keys, so the documented workaround was to add them by hand to `/config/templates/server.conf` and `/config/templates/peer.conf`. If you did that, remove the hand-added lines and set the env vars instead — otherwise the key is written twice.
 
 ## Custom protocol signatures (I1-I5)
 
