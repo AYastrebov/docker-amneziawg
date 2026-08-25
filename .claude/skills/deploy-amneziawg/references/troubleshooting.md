@@ -91,6 +91,30 @@ H2 = 1145769205-1195769205
 
 If they're single integers, `AWG_VERSION` was inferred as 1.5. Either explicitly set `AWG_VERSION=2.0` or check that the user didn't pass single-integer overrides for H1-H4.
 
+## Tunnel fails to start: `Line unrecognized` from awg setconf
+
+The `awg` build handling the config does not understand a key in it. With `AWG_RANDOM_TRAILERS` or `AWG_DISABLE_COOKIES` set, this means the host `amneziawg` **kernel module** predates 3.1:
+
+```bash
+cat /sys/module/amneziawg/version   # need >= 3.1
+docker logs <container> | grep -i "kernel module"
+```
+
+The container warns about this at startup. Two fixes:
+
+1. Upgrade the host module — `apt install --only-upgrade amneziawg-dkms` (or reinstall the DKMS package), then reboot or reload the module.
+2. Drop the switches: unset `AWG_RANDOM_TRAILERS` and `AWG_DISABLE_COOKIES` and restart. The rest of the AWG parameter set works on older modules.
+
+Note that the tunnel fails **closed** here — nothing comes up, rather than one option being silently ignored.
+
+## Peers on AWG 3.1 can't connect, server looks fine
+
+`RandomTrailers` changes the receive path as well as the send path. A peer without it expects handshake packets of exactly one length and drops the padded ones. It must be on for the server **and** every peer, or for none of them.
+
+The container writes it into every conf it generates, so container-generated peers are consistent automatically. Suspect this when a peer conf was hand-written, carried over from an older deployment, or used with a client that ignores unknown `[Interface]` keys.
+
+Also check the client actually supports 3.1 — an AmneziaVPN app or `amneziawg` build older than 3.1 will not parse the key.
+
 ## QR code not in logs
 
 `LOG_CONFS=true` must be set. By default it's `true`, but if the user disabled it:

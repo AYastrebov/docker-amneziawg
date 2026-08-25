@@ -187,6 +187,69 @@ jobs:
           docker run --rm test-image which coredns
           echo "- CoreDNS binary present" >> "$GITHUB_STEP_SUMMARY"
 
+          # Generate a real AWG 3.1 config set and check the keys land in the
+          # right sections. Tunnel activation is expected to fail on a CI
+          # runner; the confs are written by init-amneziawg-confs before that,
+          # and s6 keeps the container up either way.
+          echo "### AWG 3.1 config generation" >> "$GITHUB_STEP_SUMMARY"
+          docker rm -f awgci >/dev/null 2>&1 || true
+          docker run -d --name awgci --cap-add NET_ADMIN \
+            -e PEERS=2 -e SERVERURL=ci.example.com -e INTERNAL_SUBNET=10.55.55.0 \
+            -e AWG_VERSION=3.1 -e AWG_DISABLE_COOKIES=on \
+            test-image >/dev/null
+          for _ in $(seq 1 45); do
+            docker exec awgci test -f /config/peer2/peer2.conf 2>/dev/null && break
+            sleep 2
+          done
+          docker exec awgci test -f /config/peer2/peer2.conf \
+            || { echo "AWG 3.1: peer confs were never generated"; docker logs awgci; exit 1; }
+
+          # Every key must sit in [Interface], i.e. above the first [Peer] line.
+          check_iface_key() {
+            conf=$1; key=$2
+            docker exec awgci awk -v k="$key" '
+              /^\[Peer\]/ { exit }
+              $1 == k { found = 1 }
+              END { exit(found ? 0 : 1) }
+            ' "$conf" || { echo "AWG 3.1: $key missing from [Interface] of $conf"; docker exec awgci cat "$conf"; exit 1; }
+          }
+          for conf in /config/wg_confs/wg0.conf /config/peer1/peer1.conf /config/peer2/peer2.conf; do
+            for key in RandomTrailers DisableCookies HeaderProtectionKey; do
+              check_iface_key "$conf" "$key"
+            done
+            echo "  $conf: 3.1 switches + header protection in [Interface]"
+          done
+
+          # HeaderProtectionKey must be identical everywhere; the switches must be on.
+          hpk_server=$(docker exec awgci awk '/^HeaderProtectionKey/ {print $3; exit}' /config/wg_confs/wg0.conf)
+          hpk_peer=$(docker exec awgci awk '/^HeaderProtectionKey/ {print $3; exit}' /config/peer1/peer1.conf)
+          test -n "$hpk_server" && test "$hpk_server" = "$hpk_peer" \
+            || { echo "AWG 3.1: HeaderProtectionKey differs between server and peer"; exit 1; }
+          docker exec awgci grep -q '^RandomTrailers = on$' /config/peer1/peer1.conf \
+            || { echo "AWG 3.1: RandomTrailers not set to on"; exit 1; }
+          docker exec awgci grep -q '^DisableCookies = on$' /config/peer1/peer1.conf \
+            || { echo "AWG 3.1: DisableCookies not set to on"; exit 1; }
+
+          # Default 2.0 must not emit the 3.x keys.
+          docker rm -f awgci >/dev/null 2>&1 || true
+          docker run -d --name awgci --cap-add NET_ADMIN \
+            -e PEERS=1 -e SERVERURL=ci.example.com -e INTERNAL_SUBNET=10.56.56.0 \
+            test-image >/dev/null
+          for _ in $(seq 1 45); do
+            docker exec awgci test -f /config/peer1/peer1.conf 2>/dev/null && break
+            sleep 2
+          done
+          docker exec awgci test -f /config/peer1/peer1.conf \
+            || { echo "default 2.0: peer conf was never generated"; docker logs awgci; exit 1; }
+          if docker exec awgci grep -qE '^(RandomTrailers|DisableCookies|HeaderProtectionKey)' /config/peer1/peer1.conf; then
+            echo "default AWG_VERSION=2.0 leaked 3.x keys into the peer conf"
+            docker exec awgci cat /config/peer1/peer1.conf
+            exit 1
+          fi
+          echo "  default 2.0: no 3.x keys emitted"
+          docker rm -f awgci >/dev/null 2>&1 || true
+          echo "- AWG 3.1 config generation correct" >> "$GITHUB_STEP_SUMMARY"
+
           echo "All smoke tests passed!" >> "$GITHUB_STEP_SUMMARY"
           echo "Smoke tests passed!"
 

@@ -107,20 +107,41 @@ For each peer, optionally ask:
 
 ## Phase 5 — AWG obfuscation parameters
 
-This is the part most users don't understand. Read `references/awg-params.md` for full constraints, randomization rules, and the AWG 2.0 vs 1.5 split.
+This is the part most users don't understand. Read `references/awg-params.md` for full constraints, randomization rules, and the version split.
 
 **Default recommendation: don't touch any AWG_* params.** The container auto-generates good values on first start (S1-S4, H1-H4 as quadrant ranges, I1 as a QUIC Initial packet matching RFC 9000). All of these get persisted to `/config/server/awg_params` and reused on restart.
 
 Ask the user only:
 
-1. **AWG version**: `2.0` (default, full DPI evasion, needs AmneziaVPN app ≥ 4.8.12.9) or `1.5` (legacy, works with any AmneziaVPN app version, but easier to fingerprint).
+1. **AWG version**:
+
+   | Version | Pitch | Client requirement |
+   |---|---|---|
+   | `2.0` (default) | Full DPI evasion — I1-I5 signatures, H1-H4 ranges | AmneziaVPN app ≥ 4.8.12.9 |
+   | `3.0` | Adds header protection, content padding, randomized timers | 3.0-capable client |
+   | `3.1` | 3.0 plus `RandomTrailers` — handshake packets lose their fixed length | 3.1-capable client |
+   | `1.5` | Legacy, easier to fingerprint | Any AmneziaVPN version |
+
+   Recommend `2.0` unless the user knows every client is on 3.x software. The newer modes buy real DPI resistance but fail closed: a client that cannot parse the keys will not connect at all.
+
+   For `3.1`, also mention `AWG_DISABLE_COOKIES=on` as a separate opt-in. It is **not** enabled by `AWG_VERSION=3.1`, because it gives up WireGuard's built-in DoS mitigation. Unlike `RandomTrailers` it does not have to match between ends, so it can be turned on server-side alone.
+
+   Both switches also work with any version — `AWG_VERSION=2.0` plus `AWG_RANDOM_TRAILERS=on` is valid if the clients support it.
+
+   If the host will use the **kernel datapath**, 3.1 switches need the `amneziawg` kernel module at v3.1 or newer. Check with `cat /sys/module/amneziawg/version`. On an older module `awg setconf` rejects the config with `Line unrecognized` and the tunnel never comes up; the container warns about this at startup.
 
 2. **Override randoms?** Offer three modes:
    - **Auto (recommended)** — leave `AWG_*` env vars unset; container randomizes on first boot.
-   - **Generate now and pin in compose** — useful if the user wants to back up the docker-compose.yml and recreate the same setup elsewhere. Use `scripts/gen-awg-params.sh` to produce a valid set respecting all constraints.
+   - **Generate now and pin in compose** — useful if the user wants to back up the docker-compose.yml and recreate the same setup elsewhere. Use `scripts/gen-awg-params.sh` to produce a valid set respecting all constraints:
+
+     ```bash
+     ./scripts/gen-awg-params.sh --version 3.1                        # 3.0 params + RandomTrailers
+     ./scripts/gen-awg-params.sh --version 3.1 --disable-cookies on   # ...and no cookie replies
+     ./scripts/gen-awg-params.sh --version 2.0 --random-trailers on   # switch without the 3.x param set
+     ```
    - **User provides specific values** — for matching an existing AmneziaWG deployment. Validate against constraints before writing.
 
-If the user picks "generate now", explain: server and **every** client must use identical S1-S4, H1-H4, I1-I5 values. Jc/Jmin/Jmax may differ per side. Changing these later means redistributing every peer config.
+If the user picks "generate now", explain: server and **every** client must use identical S1-S4, H1-H4, I1-I5 values, plus `HeaderProtectionKey` and `RandomTrailers` when those are in play. Jc/Jmin/Jmax and the 3.x timer ranges may differ per side — each endpoint draws its own value from the range. `DisableCookies` is per-endpoint. Changing any of the shared values later means redistributing every peer config.
 
 ## Phase 6 — Write docker-compose.yml and deploy
 

@@ -34,7 +34,9 @@ services:
       - LOG_CONFS=true
 
       # AWG version (omit for default 2.0)
-      # - AWG_VERSION=2.0
+      # - AWG_VERSION=2.0        # 2.0 (default) | 3.0 | 3.1 | 1.5
+      # - AWG_RANDOM_TRAILERS=on # on/off, any AWG_VERSION; implied by 3.1. Must match on every end
+      # - AWG_DISABLE_COOKIES=on # on/off, any AWG_VERSION; always opt-in. Need not match
 
       # AWG obfuscation — omit all of these to let the container randomize.
       # Pin them only if you need to reproduce this exact setup elsewhere.

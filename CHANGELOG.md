@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- AWG 3.1 interface switches: `AWG_RANDOM_TRAILERS` and `AWG_DISABLE_COOKIES` (`on`/`off`), written into the `[Interface]` block of the server conf and every peer conf. Both are independent of each other and work with any `AWG_VERSION`
+- `AWG_VERSION=3.1`, a preset for the 3.0 parameter set plus `RandomTrailers = on`. `DisableCookies` remains opt-in, since it gives up DoS mitigation and does not need to match between ends
+- Startup warning when the 3.1 switches are requested against a pre-3.1 host kernel module, read from `/sys/module/amneziawg/version`, instead of failing later with `Line unrecognized` from `awg setconf`
 - AWG 3.0 protocol support (`AWG_VERSION=3.0`): HeaderProtectionKey, ContentPaddingAddition and randomized protocol timers (RekeyAfterTime, RekeyTimeout, RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts), auto-generated with env overrides
 - Initial Docker container for AmneziaWG
 - Multi-stage Docker build with Go compilation
