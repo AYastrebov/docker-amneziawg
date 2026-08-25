@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - AWG 3.1 interface switches: `AWG_RANDOM_TRAILERS` and `AWG_DISABLE_COOKIES` (`on`/`off`), written into the `[Interface]` block of the server conf and every peer conf. Both are independent of each other and work with any `AWG_VERSION`
 - `AWG_VERSION=3.1`, a preset for the 3.0 parameter set plus `RandomTrailers = on`. `DisableCookies` remains opt-in, since it gives up DoS mitigation and does not need to match between ends
-- Startup warning when the 3.1 switches are requested against a pre-3.1 host kernel module, read from `/sys/module/amneziawg/version`, instead of failing later with `Line unrecognized` from `awg setconf`
+- Startup warning when the 3.1 switches are requested against a pre-3.1 host kernel module, read from `/sys/module/amneziawg/version`, instead of failing later with `Unable to modify interface: Invalid argument`
 - AWG 3.0 protocol support (`AWG_VERSION=3.0`): HeaderProtectionKey, ContentPaddingAddition and randomized protocol timers (RekeyAfterTime, RekeyTimeout, RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts), auto-generated with env overrides
 - Initial Docker container for AmneziaWG
 - Multi-stage Docker build with Go compilation
@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated to use GitHub Packages for pre-built images
 
 ### Fixed
+- `AWG_VERSION` is now restored from `/config/server/awg_params` when the environment variable is absent. It was defaulted to `2.0` before the saved value was read, so recreating a container from a compose file that no longer set it silently regenerated every peer config as 2.0 and broke already-distributed peers
 - `/config/server/awg_params` was never written on a fresh install (the directory did not exist yet), so every container restart regenerated all AWG obfuscation parameters and invalidated previously distributed peer configs
 
 ### Security

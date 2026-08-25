@@ -48,7 +48,12 @@ fi
 #                     that uses them.
 #   "1.5"           - Legacy mode: S3=S4=0, no I1-I5 signatures,
 #                     compatible with AmneziaVPN < 4.8.12.9
-AWG_VERSION=${AWG_VERSION:-2.0}
+# Left empty on purpose: load_awg_params restores the saved version first, so
+# recreating a container without AWG_VERSION keeps the deployment on the
+# version its peer confs were built for. The 2.0 default is applied in
+# generate_awg_params, after that restore. Defaulting here would make the
+# awg_params fallback dead code and silently rewrite every peer conf as 2.0.
+AWG_VERSION=${AWG_VERSION:-}
 
 # True when the version carries the AWG 3.x parameter set (header protection,
 # content padding, randomized timers).
@@ -154,6 +159,9 @@ generate_awg3_params() {
 
 # Generate random AWG obfuscation parameters if not set
 generate_awg_params() {
+    # Applied here rather than at the top of the script so load_awg_params gets
+    # a chance to restore a previously saved version first.
+    AWG_VERSION=${AWG_VERSION:-2.0}
     echo "**** AmneziaWG version: ${AWG_VERSION} ****"
 
     # Core parameters (all versions)
@@ -225,6 +233,8 @@ generate_awg_params() {
     _dc_explicit=$(normalize_awg_switch AWG_DISABLE_COOKIES "${AWG_DISABLE_COOKIES:-}")
     AWG_RANDOM_TRAILERS="${_rt_explicit}"
     AWG_DISABLE_COOKIES="${_dc_explicit}"
+    # "off" is a real value here, not an absence, so it survives s6 and beats
+    # both the saved value and this preset.
     if [[ "${AWG_VERSION}" == "3.1" ]]; then
         AWG_RANDOM_TRAILERS=${AWG_RANDOM_TRAILERS:-on}
     fi
@@ -434,17 +444,24 @@ append_awg3_params_to_interface() {
 # in that case, so the tunnel fails to come up rather than losing one option.
 # The bundled userspace amneziawg-go is a 3.1 build and always supports them.
 check_awg31_kernel_support() {
-    [[ -z "${AWG_RANDOM_TRAILERS}${AWG_DISABLE_COOKIES}" ]] && return 0
+    [[ "${AWG_RANDOM_TRAILERS}" == "on" || "${AWG_DISABLE_COOKIES}" == "on" ]] || return 0
     [[ -n "${WG_QUICK_USERSPACE_IMPLEMENTATION:-}" ]] && return 0
     [[ -r /sys/module/amneziawg/version ]] || return 0
     local modver major minor
     modver=$(cat /sys/module/amneziawg/version)
     major=${modver%%.*}
     minor=${modver#*.}; minor=${minor%%.*}
-    if (( major < 3 || (major == 3 && minor < 1) )) 2>/dev/null; then
+    # Stay silent on anything we cannot read as a number ("v3.1.0", a
+    # git-describe string, a distro suffix). In bash arithmetic a non-numeric
+    # word is resolved as a variable name and evaluates to 0, which would make
+    # a perfectly capable module look ancient and fire a false warning.
+    [[ "${major}" =~ ^[0-9]+$ && "${minor}" =~ ^[0-9]+$ ]] || return 0
+    if (( major < 3 || (major == 3 && minor < 1) )); then
         echo "**** WARNING: RandomTrailers/DisableCookies need amneziawg kernel module 3.1 or newer, but ${modver} is loaded ****"
-        echo "****          awg setconf will reject the config with \"Line unrecognized\" and the tunnel will not come up.  ****"
-        echo "****          Upgrade the host module (amneziawg-dkms), or unset AWG_RANDOM_TRAILERS/AWG_DISABLE_COOKIES.     ****"
+        echo "****          The bundled awg parses these keys, so the failure comes from the kernel: awg-quick reports      ****"
+        echo "****          \"Unable to modify interface: Invalid argument\" and the tunnel does not come up.                ****"
+        echo "****          Upgrade the host module (amneziawg-dkms), or set AWG_RANDOM_TRAILERS=off and                   ****"
+        echo "****          AWG_DISABLE_COOKIES=off, which omits the keys entirely.                                         ****"
     fi
 }
 
@@ -456,10 +473,17 @@ check_awg31_kernel_support() {
 # The block is returned via a variable rather than stdout on purpose: command
 # substitution strips trailing newlines, which would glue the last option onto
 # the following [Peer] line and make awg setconf reject the whole config.
+# Only "on" emits a key. "off" is deliberately written as an absent key rather
+# than "= off": off is already the endpoint default, so the two are functionally
+# identical, and omitting it keeps the config parseable by an older amneziawg
+# that does not know the key at all. That makes "off" the way out of a tunnel
+# broken by these switches — an empty value cannot serve that role, because s6
+# drops empty variables from container_environment and the script would see it
+# as absent, i.e. "reuse the saved value".
 awg31_options_block() {
     BLOCK_OUT=""
-    [[ -n "${AWG_RANDOM_TRAILERS}" ]] && BLOCK_OUT+="RandomTrailers = ${AWG_RANDOM_TRAILERS}"$'\n'
-    [[ -n "${AWG_DISABLE_COOKIES}" ]] && BLOCK_OUT+="DisableCookies = ${AWG_DISABLE_COOKIES}"$'\n'
+    [[ "${AWG_RANDOM_TRAILERS}" == "on" ]] && BLOCK_OUT+="RandomTrailers = on"$'\n'
+    [[ "${AWG_DISABLE_COOKIES}" == "on" ]] && BLOCK_OUT+="DisableCookies = on"$'\n'
 }
 
 # Append the AWG 3.1 options to the server conf (called before any [Peer] exists)

@@ -77,6 +77,7 @@ services:
 
       # ---- AWG 3.1 interface switches (work with any AWG_VERSION) ----
       # Written to the server conf and every peer conf when set; unset = key not written.
+      # Only "on" writes the key; "off" omits it (off is the default anyway) and is how you turn a switch back off.
       # - AWG_RANDOM_TRAILERS=on                # Random-length handshake packets. Defaults to "on" when AWG_VERSION=3.1. Must match on every end
       # - AWG_DISABLE_COOKIES=on                # No cookie-reply under load. Always opt-in; gives up DoS mitigation. Need not match
 

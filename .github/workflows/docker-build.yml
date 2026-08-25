@@ -197,11 +197,15 @@ jobs:
             -e PEERS=2 -e SERVERURL=ci.example.com -e INTERNAL_SUBNET=10.55.55.0 \
             -e AWG_VERSION=3.1 -e AWG_DISABLE_COOKIES=on \
             test-image >/dev/null
+          # Wait on the .png, not the .conf: the conf file exists from the
+          # moment the template heredoc runs, before the three awk passes that
+          # insert the signatures and the 3.x/3.1 keys. The png is the last
+          # thing generate_confs writes for a peer.
           for _ in $(seq 1 45); do
-            docker exec awgci test -f /config/peer2/peer2.conf 2>/dev/null && break
+            docker exec awgci test -f /config/peer2/peer2.png 2>/dev/null && break
             sleep 2
           done
-          docker exec awgci test -f /config/peer2/peer2.conf \
+          docker exec awgci test -f /config/peer2/peer2.png \
             || { echo "AWG 3.1: peer confs were never generated"; docker logs awgci; exit 1; }
 
           # Every key must sit in [Interface], i.e. above the first [Peer] line.
@@ -236,10 +240,10 @@ jobs:
             -e PEERS=1 -e SERVERURL=ci.example.com -e INTERNAL_SUBNET=10.56.56.0 \
             test-image >/dev/null
           for _ in $(seq 1 45); do
-            docker exec awgci test -f /config/peer1/peer1.conf 2>/dev/null && break
+            docker exec awgci test -f /config/peer1/peer1.png 2>/dev/null && break
             sleep 2
           done
-          docker exec awgci test -f /config/peer1/peer1.conf \
+          docker exec awgci test -f /config/peer1/peer1.png \
             || { echo "default 2.0: peer conf was never generated"; docker logs awgci; exit 1; }
           if docker exec awgci grep -qE '^(RandomTrailers|DisableCookies|HeaderProtectionKey)' /config/peer1/peer1.conf; then
             echo "default AWG_VERSION=2.0 leaked 3.x keys into the peer conf"

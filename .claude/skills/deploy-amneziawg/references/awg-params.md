@@ -56,7 +56,9 @@ Timers are **ranges**, and each endpoint draws its own value from within the ran
 | `AWG_RANDOM_TRAILERS` | Random-length trailer on handshake init/response/cookie-reply packets, so they lose their fixed length | **Yes** |
 | `AWG_DISABLE_COOKIES` | No cookie-reply messages under load, removing a distinctive probe response. Costs WireGuard's DoS mitigation | No |
 
-Both accept `on`/`off` and work with **any** `AWG_VERSION`, so `2.0` + `AWG_RANDOM_TRAILERS=on` is a valid combination. Leave a var unset and the key is not written at all.
+Both accept `on`/`off` and work with **any** `AWG_VERSION`, so `2.0` + `AWG_RANDOM_TRAILERS=on` is a valid combination. Only `on` writes a key; unset or `off` omits it entirely rather than writing `= off`.
+
+`off` is also the way to turn a switch back off — an absent variable means "reuse the saved value" from `/config/server/awg_params`, and an empty one is indistinguishable from absent because s6 drops empty variables from `container_environment`.
 
 `AWG_DISABLE_COOKIES` is never turned on implicitly, including under `3.1` — it is a security trade the user should make deliberately.
 

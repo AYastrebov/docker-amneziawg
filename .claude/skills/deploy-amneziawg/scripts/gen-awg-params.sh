@@ -210,9 +210,11 @@ if [ "$has_3x" = 1 ]; then
     emit AWG_MAX_HANDSHAKE_ATTEMPTS  MaxHandshakeAttempts   "$MAX_HANDSHAKE_ATTEMPTS"
 fi
 
-# AWG 3.1 interface switches — independent of the version above.
-[ -n "$random_trailers" ] && emit AWG_RANDOM_TRAILERS RandomTrailers "$random_trailers"
-[ -n "$disable_cookies" ] && emit AWG_DISABLE_COOKIES DisableCookies "$disable_cookies"
+# AWG 3.1 interface switches — independent of the version above. Only "on" is
+# emitted: the container omits the key for "off" rather than writing "= off"
+# (off is the endpoint default), and a pinned set should match that.
+[ "$random_trailers" = "on" ] && emit AWG_RANDOM_TRAILERS RandomTrailers "$random_trailers"
+[ "$disable_cookies" = "on" ] && emit AWG_DISABLE_COOKIES DisableCookies "$disable_cookies"
 
 # Sanity self-check
 [ "$S1" -le 1132 ] || { echo "BUG: S1 > 1132" >&2; exit 1; }

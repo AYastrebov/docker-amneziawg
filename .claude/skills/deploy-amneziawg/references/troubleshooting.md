@@ -91,9 +91,16 @@ H2 = 1145769205-1195769205
 
 If they're single integers, `AWG_VERSION` was inferred as 1.5. Either explicitly set `AWG_VERSION=2.0` or check that the user didn't pass single-integer overrides for H1-H4.
 
-## Tunnel fails to start: `Line unrecognized` from awg setconf
+## Tunnel fails to start after enabling the AWG 3.1 switches
 
-The `awg` build handling the config does not understand a key in it. With `AWG_RANDOM_TRAILERS` or `AWG_DISABLE_COOKIES` set, this means the host `amneziawg` **kernel module** predates 3.1:
+Two different errors, two different causes:
+
+| Error from `awg-quick` | Who rejected it |
+|---|---|
+| `Unable to modify interface: Invalid argument` | The **kernel module** — the bundled `awg` parsed the key fine and the kernel refused it over netlink. This is the case inside this container, whose tools are pinned at 3.1 |
+| `Line unrecognized: RandomTrailers` | The **userspace tools** — an `awg` build older than 3.1 does not know the key at all. Only relevant outside this container, e.g. on a client host |
+
+With `AWG_RANDOM_TRAILERS` or `AWG_DISABLE_COOKIES` set, the first one means the host `amneziawg` **kernel module** predates 3.1:
 
 ```bash
 cat /sys/module/amneziawg/version   # need >= 3.1
@@ -103,7 +110,9 @@ docker logs <container> | grep -i "kernel module"
 The container warns about this at startup. Two fixes:
 
 1. Upgrade the host module — `apt install --only-upgrade amneziawg-dkms` (or reinstall the DKMS package), then reboot or reload the module.
-2. Drop the switches: unset `AWG_RANDOM_TRAILERS` and `AWG_DISABLE_COOKIES` and restart. The rest of the AWG parameter set works on older modules.
+2. Drop the switches: set `AWG_RANDOM_TRAILERS=off` and `AWG_DISABLE_COOKIES=off` and restart. The rest of the AWG parameter set works on older modules, so there is no need to leave `AWG_VERSION=3.1`.
+
+   Removing the variables entirely is **not** enough — like every other `AWG_*` setting they are restored from `/config/server/awg_params`, so an absent variable means "reuse the saved value". An empty value does not work either: s6 drops empty variables from `container_environment`, so the script sees it as absent. `off` is the one that works, and it omits the key from the config rather than writing `= off`, which is what an old module needs.
 
 Note that the tunnel fails **closed** here — nothing comes up, rather than one option being silently ignored.
 
