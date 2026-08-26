@@ -22,53 +22,11 @@
 - Existing user `Corefile`s are never edited; only hinted.
 - Shell style: 4-space indent, `# shellcheck shell=bash`, `local` only inside functions, `**** message ****` log format.
 - Commits: conventional commits; end every commit message with the two trailer lines used in this repo (`Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD`).
-- Branch: `feature/ipv6-support` (already created from `master` at `cd9904f`).
+- Branch: `feature/ipv6-support`, rebased on `master` at `656d987` (#36 merged: shipped template now has `ip6tables ... DROP` rules and `SERVERURL=auto` already uses `curl -4`).
 
 ---
 
-### Task 1: Take the `curl -4` fix from PR #36
-
-**Files:**
-- Modify: `root/etc/s6-overlay/s6-rc.d/init-amneziawg-confs/run:690`
-
-**Interfaces:**
-- Produces: nothing new; `SERVERURL` auto-detection now always yields an IPv4 literal.
-
-- [ ] **Step 1: Change the curl line**
-
-Replace
-```bash
-        SERVERURL=$(curl -s icanhazip.com)
-```
-with
-```bash
-        # -4: on a dual-stack host icanhazip returns the IPv6 address, which
-        # the peer template would write unbracketed as "Endpoint = 2a01::1:51820"
-        SERVERURL=$(curl -s -4 icanhazip.com)
-```
-
-- [ ] **Step 2: Verify syntax**
-
-Run: `bash -n root/etc/s6-overlay/s6-rc.d/init-amneziawg-confs/run && echo OK`
-Expected: `OK`
-
-- [ ] **Step 3: Commit with credit**
-
-```bash
-git add root/etc/s6-overlay/s6-rc.d/init-amneziawg-confs/run
-git commit -m "fix: detect SERVERURL over IPv4 only
-
-On a dual-stack host icanhazip.com returns the IPv6 address, which lands
-unbracketed in the peer Endpoint. Taken from #36 by @lqflqf.
-
-Co-Authored-By: lqflqf <lqflqf@users.noreply.github.com>
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
-```
-
----
-
-### Task 2: Library skeleton + prefix derivation and validation
+### Task 1: Library skeleton + prefix derivation and validation
 
 **Files:**
 - Create: `root/app/ipv6-lib.sh`
@@ -278,7 +236,7 @@ Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
 
 ---
 
-### Task 3: Exit-mode resolution
+### Task 2: Exit-mode resolution
 
 **Files:**
 - Modify: `root/app/ipv6-lib.sh` (append)
@@ -442,7 +400,7 @@ Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
 
 ---
 
-### Task 4: Template migration
+### Task 3: Template migration
 
 **Files:**
 - Modify: `root/app/ipv6-lib.sh` (append)
@@ -450,10 +408,10 @@ Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
 
 **Interfaces:**
 - Produces:
-  - `ip6_migrate_line <file> <old-exact-line> <new-line> <marker> <label>` — if `<file>` contains `<marker>` (fixed string, anywhere) → no-op; else if it contains `<old-exact-line>` as a whole line → replace that line with `<new-line>` and log `migrated`; else log a `customised` warning. Always exits 0.
-  - `ip6_migrate_templates <server.conf> <peer.conf>` — applies the four rows from the spec §4.3.
+  - `ip6_migrate_line <file> <new-line> <marker> <label> <old-exact-line>...` — if `<file>` contains `<marker>` (fixed string, anywhere) → no-op; else if it contains any `<old-exact-line>` as a whole line → replace that line with `<new-line>` and log `migrated`; else log a `customised` warning. Always exits 0.
+  - `ip6_migrate_templates <server.conf> <peer.conf>` — applies the four rows from the spec §4.3; `PostUp`/`PostDown` each recognise **two** old variants (pre-#36 ACCEPT+MASQUERADE, and #36's DROP).
 - Constants (exported for the run script and the tests):
-  - `IP6_OLD_SERVER_ADDRESS`, `IP6_NEW_SERVER_ADDRESS`, `IP6_OLD_POSTUP`, `IP6_NEW_POSTUP`, `IP6_OLD_POSTDOWN`, `IP6_NEW_POSTDOWN`, `IP6_OLD_PEER_ADDRESS`, `IP6_NEW_PEER_ADDRESS`.
+  - `IP6_OLD_SERVER_ADDRESS`, `IP6_NEW_SERVER_ADDRESS`, `IP6_OLD_POSTUP_ACCEPT`, `IP6_OLD_POSTUP_DROP`, `IP6_NEW_POSTUP`, `IP6_OLD_POSTDOWN_ACCEPT`, `IP6_OLD_POSTDOWN_DROP`, `IP6_NEW_POSTDOWN`, `IP6_OLD_PEER_ADDRESS`, `IP6_NEW_PEER_ADDRESS`.
 
 - [ ] **Step 1: Append failing tests**
 
@@ -484,6 +442,17 @@ DNS = ${PEERDNS}
 AllowedIPs = ${ALLOWEDIPS}
 EOF
 }
+drop_server() {  # the template shipped by #36 (656d987): ip6tables DROP, no v6 NAT
+    cat > "$1" <<'EOF'
+[Interface]
+Address = ${INTERFACE}.1
+ListenPort = 51820
+PrivateKey = $(cat /config/server/privatekey-server)
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j DROP; ip6tables -D FORWARD -o %i -j DROP
+Jc = ${AWG_JC}
+EOF
+}
 
 old_server "$TMPD/server.conf"; old_peer "$TMPD/peer.conf"
 log=$(ip6_migrate_templates "$TMPD/server.conf" "$TMPD/peer.conf")
@@ -495,6 +464,14 @@ assert_contains "$(cat "$TMPD/peer.conf")" 'Address = ${CLIENT_IP}${CLIENT_IP6:+
 assert_eq "7" "$(wc -l < "$TMPD/server.conf" | tr -d ' ')" "server line count unchanged"
 assert_eq "7" "$(wc -l < "$TMPD/peer.conf" | tr -d ' ')" "peer line count unchanged"
 assert_contains "$log" 'migrated PostUp' "migration logged"
+
+# #36 DROP variant migrates the same way
+drop_server "$TMPD/drop.conf"
+log=$(ip6_migrate_templates "$TMPD/drop.conf" "$TMPD/peer.conf")
+assert_contains "$(cat "$TMPD/drop.conf")" 'MASQUERADE${IP6_POSTUP:+; ${IP6_POSTUP}}' "DROP variant PostUp migrated"
+assert_contains "$(cat "$TMPD/drop.conf")" 'MASQUERADE${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}' "DROP variant PostDown migrated"
+assert_eq "0" "$(grep -c 'DROP' "$TMPD/drop.conf")" "DROP rules gone"
+assert_contains "$log" 'migrated PostUp' "DROP migration logged"
 
 # idempotent: second run changes nothing and logs nothing about migration
 before=$(cat "$TMPD/server.conf" "$TMPD/peer.conf")
@@ -530,34 +507,41 @@ Expected: `>= 1`
 # is left alone with a warning.
 IP6_OLD_SERVER_ADDRESS='Address = ${INTERFACE}.1'
 IP6_NEW_SERVER_ADDRESS='Address = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}'
-IP6_OLD_POSTUP='PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE'
+# Two PostUp/PostDown generations exist in the wild: the original ACCEPT+MASQUERADE
+# lines, and the DROP lines shipped by #36 (656d987). Both migrate to the placeholder.
+IP6_OLD_POSTUP_ACCEPT='PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE'
+IP6_OLD_POSTUP_DROP='PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP'
 IP6_NEW_POSTUP='PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE${IP6_POSTUP:+; ${IP6_POSTUP}}'
-IP6_OLD_POSTDOWN='PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -D FORWARD -o %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o eth+ -j MASQUERADE'
+IP6_OLD_POSTDOWN_ACCEPT='PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -D FORWARD -o %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o eth+ -j MASQUERADE'
+IP6_OLD_POSTDOWN_DROP='PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j DROP; ip6tables -D FORWARD -o %i -j DROP'
 IP6_NEW_POSTDOWN='PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}'
 IP6_OLD_PEER_ADDRESS='Address = ${CLIENT_IP}'
 IP6_NEW_PEER_ADDRESS='Address = ${CLIENT_IP}${CLIENT_IP6:+,${CLIENT_IP6}}'
 
-# <file> <old line> <new line> <marker> <label>
+# <file> <new line> <marker> <label> <old line>...
 ip6_migrate_line() {
-    local file=$1 old=$2 new=$3 marker=$4 label=$5 line tmp
+    local file=$1 new=$2 marker=$3 label=$4 old line tmp
+    shift 4
     [[ -f "${file}" ]] || return 0
     if grep -Fq -- "${marker}" "${file}"; then
         return 0
     fi
-    if grep -Fxq -- "${old}" "${file}"; then
-        tmp=$(mktemp)
-        while IFS= read -r line || [[ -n "${line}" ]]; do
-            if [[ "${line}" == "${old}" ]]; then
-                printf '%s\n' "${new}"
-            else
-                printf '%s\n' "${line}"
-            fi
-        done < "${file}" > "${tmp}"
-        cat "${tmp}" > "${file}"
-        rm -f "${tmp}"
-        echo "**** ${file}: migrated ${label} line for IPv6 support ****"
-        return 0
-    fi
+    for old in "$@"; do
+        if grep -Fxq -- "${old}" "${file}"; then
+            tmp=$(mktemp)
+            while IFS= read -r line || [[ -n "${line}" ]]; do
+                if [[ "${line}" == "${old}" ]]; then
+                    printf '%s\n' "${new}"
+                else
+                    printf '%s\n' "${line}"
+                fi
+            done < "${file}" > "${tmp}"
+            cat "${tmp}" > "${file}"
+            rm -f "${tmp}"
+            echo "**** ${file}: migrated ${label} line for IPv6 support ****"
+            return 0
+        fi
+    done
     echo "**** ${file}: ${label} line is customised and has no ${marker} placeholder; IPv6 will not be applied to it. See README section \"IPv6\" ****"
     return 0
 }
@@ -565,10 +549,10 @@ ip6_migrate_line() {
 # <server template> <peer template>
 ip6_migrate_templates() {
     local server=$1 peer=$2
-    ip6_migrate_line "${server}" "${IP6_OLD_SERVER_ADDRESS}" "${IP6_NEW_SERVER_ADDRESS}" '${SERVER_IP6' 'Address'
-    ip6_migrate_line "${server}" "${IP6_OLD_POSTUP}"         "${IP6_NEW_POSTUP}"         '${IP6_POSTUP' 'PostUp'
-    ip6_migrate_line "${server}" "${IP6_OLD_POSTDOWN}"       "${IP6_NEW_POSTDOWN}"       '${IP6_POSTDOWN' 'PostDown'
-    ip6_migrate_line "${peer}"   "${IP6_OLD_PEER_ADDRESS}"   "${IP6_NEW_PEER_ADDRESS}"   '${CLIENT_IP6' 'Address'
+    ip6_migrate_line "${server}" "${IP6_NEW_SERVER_ADDRESS}" '${SERVER_IP6'   'Address'  "${IP6_OLD_SERVER_ADDRESS}"
+    ip6_migrate_line "${server}" "${IP6_NEW_POSTUP}"         '${IP6_POSTUP'   'PostUp'   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}"
+    ip6_migrate_line "${server}" "${IP6_NEW_POSTDOWN}"       '${IP6_POSTDOWN' 'PostDown' "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"
+    ip6_migrate_line "${peer}"   "${IP6_NEW_PEER_ADDRESS}"   '${CLIENT_IP6'   'Address'  "${IP6_OLD_PEER_ADDRESS}"
 }
 ```
 
@@ -580,7 +564,7 @@ Note the markers are `${SERVER_IP6`, `${IP6_POSTUP`, `${IP6_POSTDOWN`, `${CLIENT
 bash tests/ipv6-lib.test.sh | tail -1        # PASS n / FAIL 0
 shellcheck -s bash root/app/ipv6-lib.sh tests/ipv6-lib.test.sh
 git add root/app/ipv6-lib.sh tests/ipv6-lib.test.sh
-git commit -m "feat(ipv6): migrate user templates to IPv6 placeholders, warn on customised lines
+git commit -m "feat(ipv6): migrate both template generations to IPv6 placeholders, warn on customised lines
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
@@ -588,7 +572,7 @@ Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
 
 ---
 
-### Task 5: CoreDNS AAAA filter
+### Task 4: CoreDNS AAAA filter
 
 **Files:**
 - Modify: `root/app/ipv6-lib.sh` (append)
@@ -685,16 +669,16 @@ Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
 
 ---
 
-### Task 6: Wire the library into the run script and templates
+### Task 5: Wire the library into the run script and templates
 
 **Files:**
 - Modify: `root/defaults/server.conf:2,5,6`
 - Modify: `root/defaults/peer.conf:2`
-- Modify: `root/etc/s6-overlay/s6-rc.d/init-amneziawg-confs/run` — see exact anchors below (line numbers are from `cd9904f` + Task 1; re-grep if they drift)
+- Modify: `root/etc/s6-overlay/s6-rc.d/init-amneziawg-confs/run` — see exact anchors below (line numbers are from `656d987`; re-grep if they drift)
 - Modify: `Dockerfile` (only if `root/app` is not already copied — check first)
 
 **Interfaces:**
-- Consumes: everything from Tasks 2–5.
+- Consumes: everything from Tasks 1–4.
 - Produces: globals `SERVER_IP6`, `CLIENT_IP6` used by the templates; `ORIG_IP6_SUBNET`, `ORIG_IP6_EXIT` in `.donoteditthisfile`.
 
 - [ ] **Step 1: Confirm `root/app` ships in the image**
@@ -704,7 +688,7 @@ Expected: a `COPY root/ /` line and `show-peer` listed next to `ipv6-lib.sh`. If
 
 - [ ] **Step 2: Update the default templates**
 
-`root/defaults/server.conf` lines 2, 5, 6 become exactly `IP6_NEW_SERVER_ADDRESS`, `IP6_NEW_POSTUP`, `IP6_NEW_POSTDOWN` from Task 4:
+`root/defaults/server.conf` lines 2, 5, 6 become exactly `IP6_NEW_SERVER_ADDRESS`, `IP6_NEW_POSTUP`, `IP6_NEW_POSTDOWN` from Task 3:
 
 ```
 Address = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}
@@ -870,13 +854,13 @@ Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
 
 ---
 
-### Task 7: CI — unit tests and container smoke scenarios
+### Task 6: CI — unit tests and container smoke scenarios
 
 **Files:**
 - Modify: `.github/workflows/docker-build.yml` — new step before `Build and push` (line ~107); new scenarios inside `Test image (PR only)` before `echo "All smoke tests passed!"` (line ~257).
 
 **Interfaces:**
-- Consumes: log strings and file names from Tasks 2–6 exactly as written there.
+- Consumes: log strings and file names from Tasks 1–5 exactly as written there.
 
 - [ ] **Step 1: Add the unit-test step**
 
@@ -970,6 +954,18 @@ Insert before `echo "All smoke tests passed!" >> "$GITHUB_STEP_SUMMARY"`:
           if docker exec awgci grep -q 'ip6tables -A FORWARD -i %i -j ACCEPT' /config/wg_confs/wg0.conf; then fail "migration: old ACCEPT rules survived"; fi
           echo "  old templates: migrated"
 
+          # 6b. #36 DROP templates (what master ships between 656d987 and this PR) migrate too
+          docker rm -f awgci >/dev/null 2>&1 || true
+          docker run --rm -v awgci-cfg:/config test-image sh -c '
+            sed -i "s|^PostUp = .*|PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP|" /config/templates/server.conf
+            sed -i "s|^PostDown = .*|PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j DROP; ip6tables -D FORWARD -o %i -j DROP|" /config/templates/server.conf
+          '
+          start_awgci -v awgci-cfg:/config
+          docker logs awgci 2>&1 | grep -q 'migrated PostUp line' || fail "DROP migration: PostUp not migrated"
+          if docker exec awgci grep -q -- '-j DROP' /config/wg_confs/wg0.conf; then fail "DROP migration: DROP rules survived"; fi
+          docker exec awgci grep -q 'icmp6-adm-prohibited' /config/wg_confs/wg0.conf || fail "DROP migration: REJECT missing"
+          echo "  #36 DROP templates: migrated"
+
           # 7. customised PostUp is warned about, not fatal
           docker rm -f awgci >/dev/null 2>&1 || true
           docker run --rm -v awgci-cfg:/config test-image sh -c 'sed -i "s|^PostUp = .*|PostUp = iptables -A FORWARD -i %i -j ACCEPT; /config/hook.sh|" /config/templates/server.conf'
@@ -1007,7 +1003,7 @@ Expected: `build` passes. If a scenario fails, the `fail` helper dumps logs and 
 
 ---
 
-### Task 8: Documentation, compose example, deploy skill
+### Task 7: Documentation, compose example, deploy skill
 
 **Files:**
 - Modify: `README.md` (env table row after `ALLOWEDIPS` ~line 142; new `## IPv6` section after the AWG 3.1 section; troubleshooting entry)
@@ -1019,7 +1015,13 @@ Expected: `build` passes. If a scenario fails, the `fail` helper dumps logs and 
 
 - [ ] **Step 1: README env table rows**
 
-After the `ALLOWEDIPS` row add:
+Replace the `ALLOWEDIPS` row (rewritten by #36; it says the tunnel is IPv4-only and that `::/0` "sinks" IPv6, which stops being true here) with:
+
+```markdown
+| `-e ALLOWEDIPS=0.0.0.0/0, ::/0` | Traffic peers route into the tunnel. Keep `::/0`: peers now have an IPv6 address, so all IPv6 enters the tunnel and is either forwarded (IPv6 egress enabled) or rejected at the server — never leaked. Narrow to specific subnets for split tunnelling |
+```
+
+After it add:
 
 ```markdown
 | `-e IP6_SUBNET=` | IPv6 tunnel prefix, `<prefix>::/64`. Default: ULA derived from `INTERNAL_SUBNET` (`10.13.13.0` → `fd0a:0d0d:0000::/64`). `off` disables IPv6 entirely |
@@ -1126,7 +1128,6 @@ CHANGELOG top entry:
 - `root/app/ipv6-lib.sh` with unit tests (`tests/ipv6-lib.test.sh`, run in CI).
 
 ### Changed
-- `SERVERURL=auto` detects the IPv4 address only (`curl -4`), from #36 by @lqflqf.
 - Firewall rules in `server.conf` templates are now `${IP6_POSTUP}`/`${IP6_POSTDOWN}` placeholders; user templates are migrated automatically, customised lines are warned about.
 - `Corefile` gains `import /config/coredns/generated/*.conf`.
 ```
@@ -1163,7 +1164,7 @@ git push
 
 ---
 
-### Task 9: Real-world verification on webdock (amneziawg-31 stack only)
+### Task 8: Real-world verification on webdock (amneziawg-31 stack only)
 
 **Files:** none in the repo. Touches only `~/amneziawg-31/` on the VPS. The `amneziawg` (2.0) container must not be restarted.
 
@@ -1215,20 +1216,16 @@ ssh webdock 'cd ~/amneziawg-31 && sed -i "s|image: amneziawg-ipv6:test|image: gh
 
 ---
 
-### Task 10: Close out PR #36 and mark the PR ready
+### Task 9: Follow up on #36 and mark the PR ready
 
 **Files:** none.
 
-- [ ] **Step 1: Draft the #36 comment — do not post without the user's go-ahead**
+- [ ] **Step 1: Draft the #36 follow-up comment — do not post without the user's go-ahead**
 
-Write to the scratchpad:
+#36 is merged (`656d987`). Its DROP template is migrated by this PR, so the only thing owed is a heads-up to the author. Write to the scratchpad:
 
 ```
-Thanks for this — the `curl -4` fix is real and is now on master via <commit> (credited to you).
-
-For the ip6tables part we went a different way, documented in docs/superpowers/specs/2026-08-26-ipv6-support-design.md and implemented in #<new PR>: peers now always get an IPv6 address inside the tunnel (that is what actually makes dual-stack clients install the ::/0 route, which is the leak you were seeing), and the server rejects IPv6 with ICMPv6 when it has no IPv6 route — or NATs it when the Docker network has IPv6. That covers the leak without hard-coding a DROP into user-owned templates.
-
-Closing this in favour of #<new PR>; would be glad if you could test the new image on your setup.
+Follow-up: #<new PR> builds on this. Peers now always get an IPv6 address inside the tunnel (that is what makes dual-stack clients actually install the ::/0 route), and the server rejects IPv6 with ICMPv6 when it has no IPv6 route — your DROP template is migrated to that automatically — or NATs it when the Docker network has enable_ipv6: true. If you can try the new image on your host-network setup, that would be a useful data point.
 ```
 
 - [ ] **Step 2: Mark the PR ready**
@@ -1238,14 +1235,14 @@ gh pr ready
 gh pr view --web
 ```
 
-Then ask the user whether to post the #36 comment and close #36.
+Then ask the user whether to post the #36 follow-up.
 
 ---
 
 ## Self-review
 
-**Spec coverage:** §4.1 addressing → Tasks 2, 6. §4.2 exit → Tasks 3, 6. §4.3 templates/migration → Tasks 4, 6. §4.4 CoreDNS → Tasks 5, 6. §4.5 persistence → Task 6 step 6. §4.6 compose/deploy skill → Task 8. §4.7 PR #36 → Tasks 1, 10. §5 failure modes: invalid prefix (T2), customised template (T4), forced nat fails loudly (documented T8), `IP6_SUBNET=off` no rules (T3 test "no prefix beats forced nat", T7 scenario 2), custom Corefile hint (T5). §6 testing: CI scenarios 1–7 → Task 7 (spec scenario 7 `routed` = CI scenario 5; spec 5 & 6 = CI 6 & 7); VPS → Task 9. §7 docs → Task 8.
+**Spec coverage:** §4.1 addressing → Tasks 1, 5. §4.2 exit → Tasks 2, 5. §4.3 templates/migration (both PostUp generations) → Tasks 3, 5. §4.4 CoreDNS → Tasks 4, 5. §4.5 persistence → Task 5 step 6. §4.6 compose/deploy skill → Task 7. §4.7 PR #36 → Task 9 (the `curl -4` half is already on master). §5 failure modes: invalid prefix (T1), customised template (T3), forced nat fails loudly (documented T7), `IP6_SUBNET=off` no rules (T2 test "no prefix beats forced nat", T6 scenario 2), custom Corefile hint (T4). §6 testing: spec scenarios 1–7 → Task 6 (spec 7 `routed` = CI 5; spec 5 & 6 = CI 6, 6b & 7); VPS → Task 8. §7 docs → Task 7.
 
-**Placeholder scan:** none; every code step has full content. Task 10's `<commit>`/`<new PR>` are values known only at execution time and are marked as such.
+**Placeholder scan:** none; every code step has full content. Task 9's `<new PR>` is known only at execution time and is marked as such.
 
-**Type/name consistency:** `IP6_PREFIX`, `IP6_SUBNET_EFFECTIVE`, `IP6_EXIT_EFFECTIVE`, `IP6_POSTUP`, `IP6_POSTDOWN`, `SERVER_IP6`, `CLIENT_IP6`, `ip6_resolve_subnet`, `ip6_resolve_exit`, `ip6_server_addr`, `ip6_peer_addr`, `ip6_migrate_templates`, `ip6_write_coredns_filter`, `IP6_COREDNS_IMPORT` are spelled identically in Tasks 2–7. CI scenario 1 uses `INTERNAL_SUBNET=10.13.13.0` so the derived prefix `fd0a:0d0d:0000::` matches the unit tests; Task 9 uses the VPS's `10.13.14.0` → `fd0a:0d0e:0000::`.
+**Type/name consistency:** `IP6_PREFIX`, `IP6_SUBNET_EFFECTIVE`, `IP6_EXIT_EFFECTIVE`, `IP6_POSTUP`, `IP6_POSTDOWN`, `SERVER_IP6`, `CLIENT_IP6`, `ip6_resolve_subnet`, `ip6_resolve_exit`, `ip6_server_addr`, `ip6_peer_addr`, `ip6_migrate_line` (new-line-first signature), `ip6_migrate_templates`, `ip6_write_coredns_filter`, `IP6_COREDNS_IMPORT`, `IP6_OLD_POSTUP_ACCEPT`/`_DROP`, `IP6_OLD_POSTDOWN_ACCEPT`/`_DROP` are spelled identically in Tasks 1–6. CI scenario 1 uses `INTERNAL_SUBNET=10.13.13.0` so the derived prefix `fd0a:0d0d:0000::` matches the unit tests; Task 8 uses the VPS's `10.13.14.0` → `fd0a:0d0e:0000::`.

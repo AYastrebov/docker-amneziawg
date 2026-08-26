@@ -2,7 +2,7 @@
 
 Date: 2026-08-26
 Status: approved design, pending implementation
-Supersedes: PR #36 (`fix: update server configuration for IPv4-only support and prevent IPv6 leak`)
+Builds on: PR #36 (`fix: update server configuration for IPv4-only support and prevent IPv6 leak`), merged as `656d987` on 2026-08-26
 
 ## 1. Problem
 
@@ -19,9 +19,12 @@ The container is IPv4-only inside the tunnel, but the peer template ships
   MASQUERADE` also requires `ip6table_nat` on the host; where it is missing the
   `PostUp` line fails and `awg-quick` (`set -e`) tears the whole tunnel down.
 
-PR #36 replaced the rules with `DROP`, which fixes neither the client-side leak
-nor the fail-slow behaviour, and hardcodes a policy into a user-owned template
-that any later change has to migrate again.
+PR #36 (merged, `656d987`) replaced the rules with `DROP` for new deployments
+and fixed `SERVERURL=auto` to use `curl -4`. The `DROP` removes the
+`ip6table_nat` dependency but fixes neither the client-side leak nor the
+fail-slow behaviour, and it is a second generation of hard-coded policy in a
+user-owned template. Both template generations now exist in the wild and both
+must be migrated (§4.3).
 
 ## 2. Goals
 
@@ -40,7 +43,7 @@ that any later change has to migrate again.
 ### Non-goals
 
 - IPv6 for the outer AWG endpoint. `SERVERURL=auto` detects the IPv4 address
-  (`curl -4`, taken from PR #36). Docker ≥ 27 already publishes the port on
+  (`curl -4`, already on master via #36). Docker ≥ 27 already publishes the port on
   `[::]`, so a hostname with an AAAA record works passively; that is documented,
   not built.
 - Routed GUA with NDP proxying. A user who has a **routed** prefix can use
@@ -159,16 +162,16 @@ New default `root/defaults/peer.conf`: `Address = ${CLIENT_IP}${CLIENT_IP6:+,${C
 Migration of user-owned `/config/templates/*.conf` runs next to the existing
 PresharedKey migration, once per line, idempotent:
 
-| file | old line (exact, as shipped before this change) | new line |
+| file | old line(s) (exact, as shipped) | new line |
 |---|---|---|
 | server.conf | `Address = ${INTERFACE}.1` | `Address = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}` |
-| server.conf | the shipped `PostUp = ...` (v4 + v6 ACCEPT/MASQUERADE) | the new `PostUp` |
-| server.conf | the shipped `PostDown = ...` | the new `PostDown` |
+| server.conf | `PostUp = ...` — **either** generation: pre-#36 (v4 rules + `ip6tables ACCEPT ×2 + nat MASQUERADE`) **or** #36 (v4 rules + `ip6tables ... -j DROP ×2`) | the new `PostUp` |
+| server.conf | `PostDown = ...` — same two generations with `-D` | the new `PostDown` |
 | peer.conf | `Address = ${CLIENT_IP}` | `Address = ${CLIENT_IP}${CLIENT_IP6:+,${CLIENT_IP6}}` |
 
-Matching is exact-line (`grep -Fxq`), replacement via `sed` on that exact line.
-If a template contains neither the old line nor the new variable for a given
-row, the script logs
+Matching is exact-line (`grep -Fxq`) against each known old variant in turn;
+replacement is a line-for-line rewrite of that one line. If a template contains
+neither any old variant nor the new variable for a given row, the script logs
 `**** /config/templates/server.conf: PostUp is customised and has no ${IP6_POSTUP}; IPv6 firewall rules will not be applied. See README "IPv6" ****`
 and continues. A customised template never blocks startup.
 
@@ -227,8 +230,17 @@ obfuscation param).
 
 ### 4.7 PR #36 disposition
 
-Take `curl -s -4 icanhazip.com` as its own commit with credit. Decline the
-`DROP` rules and the README rewrite with a link to this spec.
+Merged before this work started. What it leaves behind and how this design
+absorbs it:
+
+- `curl -4`: kept as is; nothing to do.
+- `DROP` template: a second old-line generation in the migration table (§4.3);
+  new deployments made between `656d987` and this release are migrated like
+  everyone else, with no extra user action.
+- README `ALLOWEDIPS` row ("the tunnel itself is IPv4-only", `::/0` "sinks"
+  IPv6): rewritten in §7, since peers now do have IPv6 inside the tunnel.
+- Author gets a follow-up comment on #36 pointing at the new PR once it is
+  ready, and an invitation to test on their host-network setup.
 
 ## 5. Failure modes and how they are handled
 
@@ -257,8 +269,9 @@ CI (`docker-build.yml` smoke, runners have no IPv6):
    still contains the template block.
 3. `IP6_SUBNET=fd12:3456:789a::/64`: peers get `fd12:3456:789a::N/128`.
 4. `IP6_SUBNET=bogus`: log contains `is invalid`, derived prefix used.
-5. Pre-seeded old-style `/config/templates/server.conf` and `peer.conf`:
-   migrated; output identical to test 1.
+5. Pre-seeded old-style `/config/templates/server.conf` and `peer.conf`
+   (pre-#36 ACCEPT/MASQUERADE generation, and separately the #36 DROP
+   generation): both migrated; output identical to test 1.
 6. Pre-seeded customised `PostUp`: warning logged, container starts.
 7. `IP6_EXIT=routed` on the runner: `PostUp` has the two `ACCEPT` rules and no
    `MASQUERADE`; no `REJECT`.
@@ -273,7 +286,9 @@ VPS (webdock, real IPv6, Docker 29): on the `amneziawg-31` stack only:
 
 ## 7. Documentation
 
-README: new "IPv6" section (what you get by default, how to enable egress —
+README: rewrite the `ALLOWEDIPS` table row from #36 (peers now have IPv6
+inside the tunnel, so "IPv4-only"/"sinks" is no longer accurate); new "IPv6"
+section (what you get by default, how to enable egress —
 three compose lines —, `IP6_SUBNET`/`IP6_EXIT` reference, routed mode, how to
 turn it off, troubleshooting for `ip6table_nat`). Env var table rows for both
 variables. CHANGELOG entry. CLAUDE.md: variable-adding checklist gains the
