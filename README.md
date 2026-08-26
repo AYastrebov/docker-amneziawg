@@ -139,7 +139,7 @@ docker run -d \
 | `-e PEERS=3` | Number or comma-separated names (`laptop,phone`). Enables server mode |
 | `-e PEERDNS=auto` | DNS for peers. `auto` = container's CoreDNS at subnet.1 |
 | `-e INTERNAL_SUBNET=10.13.13.0` | VPN subnet (.1 = server, .2+ = peers) |
-| `-e ALLOWEDIPS=0.0.0.0/0, ::/0` | Peer AllowedIPs |
+| `-e ALLOWEDIPS=0.0.0.0/0, ::/0` | Traffic peers route into the tunnel. The tunnel itself is IPv4-only, so `::/0` is included deliberately: it sinks client IPv6 instead of forwarding it, which prevents IPv6 leaks on dual-stack client networks. Drop `::/0` if you would rather peers keep using their native IPv6 outside the tunnel, or narrow the value to specific subnets for split-tunnel routing |
 | `-e PERSISTENTKEEPALIVE_PEERS=` | Which peers get keepalive: `all` or comma-separated names/numbers |
 | `-e SERVER_ALLOWEDIPS_PEER_X=` | Per-peer server AllowedIPs for site-to-site VPN |
 | `-e LOG_CONFS=true` | Show generated configs and QR codes in container logs |
