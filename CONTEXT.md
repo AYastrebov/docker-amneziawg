@@ -153,6 +153,14 @@ Breakdown: Long Header (Initial, 4-byte pkt num) + QUIC v1 + DCID(8 random) + no
 
 For custom protocols (DNS, DTLS, SIP, HTTP/3): use [AmneziaWG Architect](https://architect.vai-rice.space/).
 
+### MTU and per-packet overhead
+
+`awg-quick` sets the tunnel MTU to `route MTU − 80` (1420 on a 1500 link), exactly like wg-quick. The 80 covers IPv6 (40) + UDP (8) + WG framing (32). It does **not** include `S4`, which amneziawg-go prepends to every transport datagram (`send.go`: `crypt := elem.buffer[:elem.padding]`), so a full-size packet is `MTU + 60 + S4` over IPv4 / `MTU + 80 + S4` over IPv6 and fragments at 1500 when `S4 > 20` (IPv4) or `S4 > 0` (IPv6). Fragmented UDP is dropped or throttled by many CGNATs, mobile networks and DPI — the symptom is "connects, small things work, downloads crawl".
+
+`ContentPaddingAddition` and transport-side `RandomTrailers` never cause fragmentation: `randomPaddingAddition()` caps padding so `payload + padding ≤ MTU`, and `randomTrailer()` caps the trailer at `udpWindow − packet`, where `udpWindow` starts at `DefaultUdpWindow = 500` and grows to the largest datagram seen on the peer (reset on endpoint change). Both only inflate *small* packets. Transport trailers are used only when `ContentPaddingAddition` is zero (three-tier fallback: content padding → random trailer → 16-byte alignment).
+
+Guidance (documented in README "MTU"): 1280 for mobile/PPPoE/unknown paths (IPv6 minimum, never fragments); `1500 − 60 − S4` (≈1400-1412) for wired IPv4; `1500 − 80 − S4` for IPv6 endpoints. The container does not write `MTU`; users add it to the confs or templates. Sources: amneziawg-go `device/send.go`, `device/constants.go`; wiki.amnezia.host 3.1 upgrade guide; bivlked/amneziawg-installer ADVANCED.md (sets 1280 since v5.7.4); Any-Tech-ARCHITECT `scripts/awg-gen.sh` (parameter ranges, no MTU guidance).
+
 ## CI/CD
 
 ### docker-build.yml
@@ -185,6 +193,7 @@ Container images are tagged with the upstream `amneziawg-tools` version (e.g., `
 | Connection fails after param change | Client/server mismatch | Redistribute updated peer configs to all clients |
 | ISP blocks VPN on high ports | Some ISPs block UDP > 9999 | Use SERVERPORT <= 9999 |
 | Peers have no DNS after `USE_COREDNS=false` | CoreDNS disabled but `PEERDNS=auto` still points peers at the container | Set `PEERDNS=1.1.1.1` (or another public resolver) when disabling CoreDNS |
+| Tunnel connects but downloads are slow, pings fine | Full-size packets fragment: 1420 + 60/80 + S4 > path MTU | Set `MTU = 1280` (or `1500 − 60 − S4`) in server and peer confs; see README "MTU" |
 
 ## External References
 

@@ -19,6 +19,7 @@ AmneziaWG is WireGuard with added traffic obfuscation, so deep packet inspection
 - [Obfuscation parameters](#obfuscation-parameters)
 - [Custom protocol signatures (I1-I5)](#custom-protocol-signatures-i1-i5)
 - [Custom SERVERPORT](#custom-serverport)
+- [MTU](#mtu)
 - [Managing peers](#managing-peers)
 - [Support info](#support-info)
 - [Building locally](#building-locally)
@@ -215,7 +216,7 @@ AWG 3.1 added two `[Interface]` booleans (`on` or `off`) rather than a new param
 
 | Option | Env var | Effect | Must match on both ends |
 |--------|---------|--------|:---:|
-| `RandomTrailers` | `AWG_RANDOM_TRAILERS` | Appends a random number of random bytes to handshake initiation, response and cookie-reply packets, so those packets no longer have a fixed length. The trailer is drawn per packet to fill up to a 500-byte window | Yes |
+| `RandomTrailers` | `AWG_RANDOM_TRAILERS` | Appends a random number of random bytes to handshake initiation, response and cookie-reply packets, so those packets no longer have a fixed length. The trailer is drawn per packet to fill up to a window that starts at 500 bytes and grows to the largest datagram seen on the connection. When `ContentPaddingAddition` is `0`, the same trailer is also applied to transport packets, which can inflate every small packet (TCP ACKs, DNS) to close to full size — see [MTU](#mtu) | Yes |
 | `DisableCookies` | `AWG_DISABLE_COOKIES` | Stops the endpoint from answering with cookie-reply messages when it is under load, which removes a distinctive response to probing. You give up WireGuard's built-in DoS mitigation in exchange | No |
 
 The container writes whichever of these is `on` into the `[Interface]` block of the server conf and every peer conf, so both ends stay in step. Unset, or `off`, and the key is not written at all.
@@ -269,6 +270,61 @@ environment:
 ports:
   - 32948:51820/udp  # NOT 32948:32948/udp
 ```
+
+## MTU
+
+The container does not write an `MTU` line, so `awg-quick` does what it does for plain WireGuard: it takes the MTU of the route to the endpoint (1500 on most links) and subtracts 80, giving a tunnel MTU of 1420. That 80 covers an IPv6 header, UDP and the 32-byte WireGuard transport framing. It does **not** cover the bytes AmneziaWG adds on top, and that is why users on AWG 3.x report that dropping the MTU to 1280 makes the tunnel faster — sometimes dramatically.
+
+### What AmneziaWG adds to every transport packet
+
+Each encrypted data packet on the wire is
+
+```
+IP (20 IPv4 / 40 IPv6) + UDP (8) + S4 + 16-byte header + payload (≤ MTU) + ContentPadding + 16-byte tag
+```
+
+compared with plain WireGuard, where `S4` and `ContentPadding` are both zero. The pieces behave differently:
+
+| Component | Size | On a full-size packet | Notes |
+|-----------|------|-----------------------|-------|
+| `S4` | random 4-27 (2.0) / 12-27 (3.x), max 32 | **Adds to the datagram** | The only part `awg-quick`'s 80-byte allowance does not know about. Also carries the header-protection nonce in 3.x, which is why it cannot go below 12 there |
+| `ContentPaddingAddition` (3.x) | random `lo-hi`, container default within 16-128 | Nothing — it is capped so `payload + padding ≤ MTU` | Only grows packets that are smaller than the MTU: ACKs, DNS, keepalives. Bandwidth overhead on small packets, never fragmentation |
+| `RandomTrailers` (3.1) on transport | random `0 … window − packet` | Nothing — capped at the largest datagram already seen | Only active on transport packets when `ContentPaddingAddition = 0`. With it, a 52-byte TCP ACK can become a ~1400-byte datagram |
+
+So with the default 1420 tunnel MTU a full-size packet becomes `1420 + 60 + S4` bytes over IPv4, and `1420 + 80 + S4` over IPv6. Over IPv4 that exceeds 1500 as soon as `S4 > 20`; over an IPv6 endpoint it exceeds 1500 for any `S4 > 0`. The random `S4` the container picks is above 20 about a quarter of the time in 2.0 and half the time in 3.x — which is why one deployment is fine and the next one is "slow for no reason".
+
+### Why an oversized packet is slow rather than broken
+
+A UDP datagram larger than the path MTU is not rejected; the kernel fragments it into two IP packets. Every full-size packet of a download now costs two packets on the wire, the far end has to reassemble them, and — the part that actually hurts — many carrier-grade NATs, mobile networks, cloud load balancers and DPI boxes drop IP fragments outright or rate-limit them. Each dropped fragment loses the whole datagram, the TCP inside the tunnel sees loss, backs off, and throughput collapses while small packets (pings, handshakes, web pages) keep working. Fragmented UDP is also a classic fingerprint for DPI, which undoes the point of the obfuscation.
+
+The client side has the same problem in the other direction, and it usually has a *smaller* path MTU than the server: PPPoE (1492), LTE/5G (often 1400 or less, and iOS enforces path MTU strictly), IPv6-over-IPv4 transitions, corporate Wi-Fi. `awg-quick` on the server has no way of knowing any of this.
+
+1280 is the IPv6 minimum link MTU, which every IPv6 path is required to carry unfragmented, and it leaves 220 bytes of headroom on a 1500-byte IPv4 path — enough for `S4`, UDP, IP and a few hops of extra encapsulation. That is why it is the value people converge on, and why Amnezia's own installers and the 3.1 upgrade guides set it by default.
+
+### Which value to pick
+
+| Situation | Tunnel MTU | Why |
+|-----------|-----------:|-----|
+| Mobile clients, PPPoE, unknown paths, anything that "works but is slow" | **1280** | Safe on every path; the cost is a ~10% higher header-to-payload ratio, which is nothing next to fragmentation loss |
+| Wired clients on a clean 1500-byte path, IPv4 endpoint | 1400-1412 | `1500 − 20 − 8 − 32 − S4`, rounded down. 1412 works for the largest default `S4` (27); 1400 also survives one extra 8-byte encapsulation |
+| IPv6 endpoint on a 1500-byte path | 1380-1388 | Same arithmetic with a 40-byte IP header |
+| You have set `AWG_S4` yourself | `path − 60 (IPv4) / 80 (IPv6) − S4` | Recompute when you change `S4` |
+
+Do not go above the derived number expecting more speed: the tunnel MTU is a ceiling, and every byte above the path limit is paid back as fragmentation. Going below 1280 buys nothing except more per-packet overhead.
+
+If you rely on `RandomTrailers` without `ContentPaddingAddition` (3.1 with `AWG_CONTENT_PADDING=0`), a lower MTU also helps in a second way: the trailer window tracks the largest datagram seen, so a smaller MTU caps how far small packets can be inflated, which matters on asymmetric links where the upload ACK stream is what limits download speed.
+
+### How to set it
+
+For an existing deployment, add an `MTU` line to the `[Interface]` section of the generated confs and restart the container. For new deployments (or before the next regeneration), put the line in `/config/templates/server.conf` and `/config/templates/peer.conf` instead — templates are only read when the configs are (re)generated, which happens on first start or when a server-side or `AWG_*` variable changes:
+
+```ini
+[Interface]
+Address = ...
+MTU = 1280
+```
+
+Set it on both the server conf (`/config/wg_confs/wg0.conf`) and every peer conf (`/config/peerN/peerN.conf`, then re-import on the device — QR codes and `.conf` files are regenerated from the templates only, so hand-edited peer confs must be re-distributed). The two sides do not have to agree — each side's MTU only limits what *it* sends — but a peer left at 1420 still fragments its uploads. The AmneziaVPN app exposes MTU in the connection settings; on Windows the WinTUN adapter ignores the config value and uses 1280 regardless.
 
 ## Managing peers
 

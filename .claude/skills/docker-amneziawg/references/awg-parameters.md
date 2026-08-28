@@ -269,6 +269,9 @@ Reduce `Jc` value. More junk packets = more processing overhead.
 ### Handshake timeout
 Ensure `JMAX` isn't too large. Very large junk packets may be dropped by some networks.
 
+### Slow throughput, handshake fine
+Almost always MTU. `awg-quick` derives 1420 without accounting for `S4`, so full-size datagrams exceed 1500 when `S4 > 20` (IPv4) or on any IPv6 endpoint, and fragment. Use `MTU = 1280` on mobile/PPPoE/unknown paths, or `1500 − 60 − S4` on a clean IPv4 path. `ContentPaddingAddition` and transport `RandomTrailers` are capped to the MTU / observed window and cannot fragment; they only inflate small packets. Details: README "MTU", CONTEXT.md "MTU and per-packet overhead".
+
 ## References
 
 - [AmneziaWG Kernel Module Configuration](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module#configuration) - Official parameter constraints
