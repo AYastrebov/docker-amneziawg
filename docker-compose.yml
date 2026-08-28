@@ -52,7 +52,7 @@ services:
       # - AWG_S1=86                         # Init packet padding
       # - AWG_S2=12                         # Response packet padding
       # - AWG_S3=50                         # Cookie message padding (AWG 2.0, random if unset)
-      # - AWG_S4=50                         # Transport packet padding (AWG 2.0, random if unset). Adds to every datagram on top of the 1420 default MTU — see README "MTU" (1280 is the safe tunnel MTU)
+      # - AWG_S4=50                         # Transport packet padding (random if unset: 4-27 in 2.0, 12-27 in 3.x, 0 in 1.5). Adds to every datagram on top of the 1420 default MTU — see README "MTU" (1280 is the safe tunnel MTU)
       # - AWG_H1=1755269708                 # Header obfuscation
       # - AWG_H2=2101520157                 # Header obfuscation
       # - AWG_H3=1829552136                 # Header obfuscation

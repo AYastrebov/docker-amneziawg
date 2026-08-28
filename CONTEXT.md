@@ -159,7 +159,7 @@ For custom protocols (DNS, DTLS, SIP, HTTP/3): use [AmneziaWG Architect](https:/
 
 `ContentPaddingAddition` and transport-side `RandomTrailers` never cause fragmentation: `randomPaddingAddition()` caps padding so `payload + padding ≤ MTU`, and `randomTrailer()` caps the trailer at `udpWindow − packet`, where `udpWindow` starts at `DefaultUdpWindow = 500` and grows to the largest datagram seen on the peer (reset on endpoint change). Both only inflate *small* packets. Transport trailers are used only when `ContentPaddingAddition` is zero (three-tier fallback: content padding → random trailer → 16-byte alignment).
 
-Guidance (documented in README "MTU"): 1280 for mobile/PPPoE/unknown paths (IPv6 minimum, never fragments); `1500 − 60 − S4` (≈1400-1412) for wired IPv4; `1500 − 80 − S4` for IPv6 endpoints. The container does not write `MTU`; users add it to the confs or templates. Sources: amneziawg-go `device/send.go`, `device/constants.go`; wiki.amnezia.host 3.1 upgrade guide; bivlked/amneziawg-installer ADVANCED.md (sets 1280 since v5.7.4); Any-Tech-ARCHITECT `scripts/awg-gen.sh` (parameter ranges, no MTU guidance).
+Guidance (documented in README "MTU"): 1280 for mobile/PPPoE/unknown paths (IPv6 minimum, never fragments); `1500 − 60 − S4` (1413 for the default max S4 = 27) for wired IPv4; `1500 − 80 − S4` for IPv6 endpoints. The container does not write `MTU`; users add it to the confs or templates. Sources: amneziawg-go `device/send.go`, `device/constants.go`; wiki.amnezia.host 3.1 upgrade guide; bivlked/amneziawg-installer ADVANCED.md (sets 1280 since v5.7.4); Any-Tech-ARCHITECT `scripts/awg-gen.sh` (parameter ranges, no MTU guidance).
 
 ## CI/CD
 

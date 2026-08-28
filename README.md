@@ -291,7 +291,7 @@ compared with plain WireGuard, where `S4` and `ContentPadding` are both zero. Th
 | `ContentPaddingAddition` (3.x) | random `lo-hi`, container default within 16-128 | Nothing — it is capped so `payload + padding ≤ MTU` | Only grows packets that are smaller than the MTU: ACKs, DNS, keepalives. Bandwidth overhead on small packets, never fragmentation |
 | `RandomTrailers` (3.1) on transport | random `0 … window − packet` | Nothing — capped at the largest datagram already seen | Only active on transport packets when `ContentPaddingAddition = 0`. With it, a 52-byte TCP ACK can become a ~1400-byte datagram |
 
-So with the default 1420 tunnel MTU a full-size packet becomes `1420 + 60 + S4` bytes over IPv4, and `1420 + 80 + S4` over IPv6. Over IPv4 that exceeds 1500 as soon as `S4 > 20`; over an IPv6 endpoint it exceeds 1500 for any `S4 > 0`. The random `S4` the container picks is above 20 about a quarter of the time in 2.0 and half the time in 3.x — which is why one deployment is fine and the next one is "slow for no reason".
+So with the default 1420 tunnel MTU a full-size packet becomes `1420 + 60 + S4` bytes over IPv4, and `1420 + 80 + S4` over IPv6. Over IPv4 that exceeds 1500 as soon as `S4 > 20`; over an IPv6 endpoint it exceeds 1500 for any `S4 > 0`. The random `S4` the container picks is above 20 roughly 30 % of the time in 2.0 (7 of 24 values) and 44 % in 3.x (7 of 16) — which is why one deployment is fine and the next one is "slow for no reason".
 
 ### Why an oversized packet is slow rather than broken
 
@@ -306,8 +306,8 @@ The client side has the same problem in the other direction, and it usually has 
 | Situation | Tunnel MTU | Why |
 |-----------|-----------:|-----|
 | Mobile clients, PPPoE, unknown paths, anything that "works but is slow" | **1280** | Safe on every path; the cost is a ~10% higher header-to-payload ratio, which is nothing next to fragmentation loss |
-| Wired clients on a clean 1500-byte path, IPv4 endpoint | 1400-1412 | `1500 − 20 − 8 − 32 − S4`, rounded down. 1412 works for the largest default `S4` (27); 1400 also survives one extra 8-byte encapsulation |
-| IPv6 endpoint on a 1500-byte path | 1380-1388 | Same arithmetic with a 40-byte IP header |
+| Wired clients on a clean 1500-byte path, IPv4 endpoint | 1400-1413 | `1500 − 20 − 8 − 32 − S4`. 1413 is the ceiling for the largest default `S4` (27), 1408 for the hard maximum (32); 1400 also survives one extra 8-byte encapsulation |
+| IPv6 endpoint on a 1500-byte path | 1380-1393 | `1500 − 40 − 8 − 32 − S4`: 1393 for `S4 = 27`, 1388 for `S4 = 32` |
 | You have set `AWG_S4` yourself | `path − 60 (IPv4) / 80 (IPv6) − S4` | Recompute when you change `S4` |
 
 Do not go above the derived number expecting more speed: the tunnel MTU is a ceiling, and every byte above the path limit is paid back as fragmentation. Going below 1280 buys nothing except more per-packet overhead.
