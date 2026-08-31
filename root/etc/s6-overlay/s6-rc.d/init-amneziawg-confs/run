@@ -441,24 +441,26 @@ append_awg_signatures() {
     [[ -n "$AWG_I5" ]] && echo "I5 = ${AWG_I5}" >> "$conf_file"
 }
 
-# Insert I1-I5 into [Interface] section of a peer conf (before the [Peer] line).
-# For AWG 2.0/3.0, I2-I5 are always written (even empty) so the Amnezia app
-# detects AWG 2.0+ rather than falling back to reporting 1.5.
+# Insert I1-I5 into the [Interface] section of a peer conf, before the [Peer]
+# line — the Amnezia app only looks for signature packets in [Interface].
+#
+# Empty values are skipped rather than written as a bare "I2 =". awg rejects an
+# empty value outright ("Line unrecognized: `I2='"), which makes the whole conf
+# unloadable by awg-quick, by `awg setconf`, and by this image in client mode —
+# so a peer conf carrying placeholders only works in GUI clients with a more
+# forgiving parser. Earlier versions wrote them deliberately, on the theory that
+# their presence signalled AWG 2.0+ to the Amnezia app; version detection
+# actually keys off the H1-H4 range format, which is emitted independently and
+# is unaffected by this. The server-side append_awg_signatures() has always
+# skipped empties, so this also makes the two sides agree.
 append_awg_signatures_to_interface() {
     local conf_file=$1
-    local sig_block=""
-    [[ -n "$AWG_I1" ]] && sig_block+="I1 = ${AWG_I1}"$'\n'
-    if awg_has_2x_features; then
-        sig_block+="I2 = ${AWG_I2}"$'\n'
-        sig_block+="I3 = ${AWG_I3}"$'\n'
-        sig_block+="I4 = ${AWG_I4}"$'\n'
-        sig_block+="I5 = ${AWG_I5}"$'\n'
-    else
-        [[ -n "$AWG_I2" ]] && sig_block+="I2 = ${AWG_I2}"$'\n'
-        [[ -n "$AWG_I3" ]] && sig_block+="I3 = ${AWG_I3}"$'\n'
-        [[ -n "$AWG_I4" ]] && sig_block+="I4 = ${AWG_I4}"$'\n'
-        [[ -n "$AWG_I5" ]] && sig_block+="I5 = ${AWG_I5}"$'\n'
-    fi
+    local sig_block="" _n _var _v
+    for _n in 1 2 3 4 5; do
+        _var="AWG_I${_n}"
+        _v="${!_var:-}"
+        [[ -n "$_v" ]] && sig_block+="I${_n} = ${_v}"$'\n'
+    done
     [[ -z "$sig_block" ]] && return 0
     local tmp
     tmp=$(awk -v block="$sig_block" '

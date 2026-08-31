@@ -18,7 +18,8 @@ work" reports are a shared value drifting between the two, which is only visible
 | **Handshake succeeds, pings fine, downloads crawl** | MTU. `S4 > 20` at the default 1420 fragments every full-size packet |
 | **Tunnel never comes up at all** | A shared value differs between ends (`S`/`H`/`I`/`HeaderProtectionKey`/`RandomTrailers`), or the endpoint software is too old for a key in the config |
 | **`Unable to modify interface: Invalid argument`** | Kernel module older than the parameters used. Check `cat /sys/module/amneziawg/version` |
-| **`Line unrecognized`** | Userspace `awg` tools older than the parameters used |
+| **`Line unrecognized: `I2='`** | An `I2`-`I5` key present with an empty value. `awg` rejects empty values, so the config will not load under `awg-quick` even though a GUI client may accept it. Delete the line rather than leaving it blank |
+| **`Line unrecognized`** (other keys) | Userspace `awg` tools older than the parameters used |
 | **Worked before, one peer stopped after a change** | Shared values were regenerated server-side; that peer still has the old config and must be re-issued |
 | **Amnezia app reports "AWG 1.5" for a 2.0 config** | `H1`-`H4` are single integers rather than ranges. Also disables `I1`-`I5` processing |
 | **App connects but obfuscation seems inactive** | `I1`-`I5` placed under `[Peer]`. The app only inspects `[Interface]` |

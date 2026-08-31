@@ -254,8 +254,20 @@ def check(c, rep):
                   f"the Amnezia app only inspects [Interface] to decide the protocol "
                   f"version, and I1-I5 are ignored entirely from [Peer]")
 
+    # An empty value is not the same as an absent key: `awg setconf` rejects
+    # "I2 =" outright with "Line unrecognized", so a conf carrying empty
+    # placeholders cannot be loaded by awg-quick at all — even though the same
+    # file may work in a GUI client with a more forgiving parser.
+    empty_i = [f"I{n}" for n in range(1, 6)
+               if c.get(f"I{n}") is not None and not c.get(f"I{n}").strip()]
+    if empty_i:
+        rep.error(f"{', '.join(empty_i)} present but empty. `awg setconf` rejects an "
+                  f"empty value ('Line unrecognized'), so awg-quick cannot load this "
+                  f"config — delete the line instead of leaving it blank")
+
     for n in range(2, 6):
-        if c.get(f"I{n}") and not c.get("I1"):
+        v = c.get(f"I{n}")
+        if v and v.strip() and not (c.get("I1") or "").strip():
             rep.error(f"I{n} is set without I1; signature packets are sent in order "
                       f"and I1 must be present")
 
@@ -265,7 +277,11 @@ def cross_check(confs, rep):
         seen, missing = {}, []
         for c in confs:
             v = c.get(key)
-            if v is None:
+            # An empty value carries no signature, so it means the same thing as
+            # an absent key for comparison purposes. It is still invalid syntax,
+            # which the per-file check reports separately — no need to also call
+            # it a mismatch here.
+            if v is None or not v.strip():
                 missing.append(c.path)
             else:
                 seen.setdefault(v, []).append(c.path)
