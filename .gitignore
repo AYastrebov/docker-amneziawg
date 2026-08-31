@@ -61,3 +61,6 @@ data/
 *.tmp
 *.temp
 *.log
+
+# Skill evaluation scratch (run outputs, timings, generated test configs)
+.claude/skills/*-workspace/

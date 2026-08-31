@@ -76,7 +76,7 @@ Key points:
 | `PEERDNS` | auto | DNS for peers (auto = container's CoreDNS at subnet.1) |
 | `LOG_CONFS` | true | Show QR codes in container logs |
 | `AWG_VERSION` | 2.0 | Protocol version: 2.0 (full DPI evasion), 3.0 (header protection + randomized timers), 3.1 (3.0 + RandomTrailers) or 1.5 (legacy, AmneziaVPN < 4.8.12.9) |
-| `AWG_RANDOM_TRAILERS` | - | `on`/`off`. Random-length handshake packets. Any AWG_VERSION; defaults to `on` under 3.1. Must match on every end |
+| `AWG_RANDOM_TRAILERS` | - | `on`/`off`. Random-length handshake packets. Any AWG_VERSION; defaults to `on` under 3.1. Must match on every end. **Requires `S1 == S2 == S3 == S4`** under AWG 2.0+ or ~3.5% of transport packets are dropped — see [awg-performance.md](../../../docs/awg-performance.md) |
 | `AWG_DISABLE_COOKIES` | - | `on`/`off`. No cookie-reply under load. Any AWG_VERSION; always opt-in. Need not match |
 
 ## AmneziaWG Obfuscation — Quick Reference
@@ -88,7 +88,7 @@ For detailed parameter docs, see [references/awg-parameters.md](references/awg-p
 | `AWG_S1` | Random 15-150 | <= 1132, **S1+56 must not equal S2** |
 | `AWG_S2` | Random 15-150 | <= 1188 |
 | `AWG_S3` | Random 8-55 (2.0) / 12-55 (3.x) / 0 (1.5) | <= 64 |
-| `AWG_S4` | Random 4-27 (2.0) / 12-27 (3.x) / 0 (1.5) | <= 32, **per-packet overhead — keep small** |
+| `AWG_S4` | Random 4-20 (2.0) / 12-20 (3.x) / 0 (1.5) | <= 32, prefer **<= 20** (above that, full-size packets fragment at the default 1420 MTU), **per-packet overhead — keep small** |
 | `AWG_H1-H4` | Range (2.0) / int (1.5) | >= 5, all unique, non-overlapping |
 | `AWG_I1-I5` | Auto QUIC Initial (2.0) / empty (1.5) | In `[Interface]` before `[Peer]` |
 
@@ -129,6 +129,8 @@ Tunnel startup fails without `--device /dev/net/tun` — expected in testing.
 | `cut -d= -f2` truncates I-params with `=` | Use `cut -d= -f2-` (tag syntax contains `=` signs) |
 | Loading `awg_params` with `source` | Never — overrides Docker env vars. Use `grep`/`cut` with `${VAR:-fallback}` |
 | Amnezia app shows AWG 1.5 instead of 2.0 | H1-H4 must use range format, not single integers |
+| Upload collapses to ~2 Mbit/s under `AWG_VERSION=3.1` | `RandomTrailers` with unequal `S1`-`S4`. Set all four equal (see [awg-performance.md](../../../docs/awg-performance.md)) |
+| Download ~22% below expectations | `ContentPaddingAddition` breaks `UDP_GRO` batching. Set `AWG_CONTENT_PADDING=0` |
 | `SERVERPORT` mapping in Docker | Map as `SERVERPORT:51820/udp` — container always listens on 51820 internally |
 
 ## GitHub Actions Workflows

@@ -5,8 +5,9 @@
 # Usage:
 #   ./gen-awg-params.sh [--version 2.0|3.0|3.1|1.5] [--format compose|env|conf]
 #                       [--random-trailers on|off] [--disable-cookies on|off]
+#                       [--content-padding on|off]
 #
-# Defaults: --version 2.0 --format compose
+# Defaults: --version 2.0 --format compose --content-padding off
 #
 # --version 3.1 implies --random-trailers on. DisableCookies is never enabled
 # implicitly: it gives up WireGuard's DoS mitigation and, unlike RandomTrailers,
@@ -26,6 +27,22 @@
 #     12 bytes of the S-padding)
 #   - RejectAfterTime.lo > RekeyAfterTime.hi and > KeepaliveTimeout.lo +
 #     RekeyTimeout.lo (amneziawg-go device/timers.go)
+#
+# Performance constraints — see docs/awg-performance.md for the measurements:
+#   - S1 == S2 == S3 == S4 whenever RandomTrailers is on alongside the AWG 2.0+
+#     wide H ranges. RandomTrailers relaxes the receiver's exact-length check to
+#     ">=" (receive.c:51), leaving only the H-range test to separate packet
+#     types. With unequal S values the init/response/cookie branches read the
+#     type field at the wrong offset; garbage hits a 50M-wide H range ~1.16% of
+#     the time each, so ~3.5% of transport packets are dropped as malformed
+#     handshakes. Measured effect: upload falls from ~100 to ~2 Mbit/s.
+#     AWG 1.5 is exempt — its single-integer H values are 1 wide, not 50M.
+#   - S4 <= 20, so awg-quick's default 1420 MTU still fits a 1500-byte IPv4
+#     path (overhead is 60 + S4). S4 = 27 fragments every full-size packet.
+#   - ContentPaddingAddition is OFF by default. It costs ~22% of download
+#     throughput by defeating UDP_GRO batching on userspace clients, and it
+#     silently suppresses RandomTrailers on the send path (send.c:254) while
+#     leaving the receive path's loose matching enabled (receive.c:47).
 
 set -euo pipefail
 
@@ -33,6 +50,7 @@ version="2.0"
 format="compose"
 random_trailers=""
 disable_cookies=""
+content_padding="off"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -40,6 +58,7 @@ while [ $# -gt 0 ]; do
         --format)  format="$2";  shift 2 ;;
         --random-trailers) random_trailers="$2"; shift 2 ;;
         --disable-cookies) disable_cookies="$2"; shift 2 ;;
+        --content-padding) content_padding="$2"; shift 2 ;;
         -h|--help)
             sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
@@ -58,9 +77,19 @@ case "$version" in 2.0|3.0|3.1) has_2x=1 ;; *) has_2x=0 ;; esac
 
 # --version 3.1 is a preset for "3.0 params plus RandomTrailers".
 [ "$version" = "3.1" ] && [ -z "$random_trailers" ] && random_trailers="on"
-for sw in "$random_trailers" "$disable_cookies"; do
+for sw in "$random_trailers" "$disable_cookies" "$content_padding"; do
     case "$sw" in ""|on|off) ;; *) echo "switches must be on or off" >&2; exit 2 ;; esac
 done
+
+# ContentPaddingAddition and RandomTrailers are mutually exclusive in effect:
+# CPA wins on the send path and suppresses the trailers, but the receiver still
+# runs the loose ">=" length match. Enabling both buys the risk and none of the
+# obfuscation, so refuse rather than emit a set that looks fine and is not.
+if [ "$content_padding" = "on" ] && [ "$random_trailers" = "on" ]; then
+    echo "ContentPaddingAddition suppresses RandomTrailers on send but not on receive." >&2
+    echo "Pick one: --content-padding on OR --random-trailers on. See docs/awg-performance.md." >&2
+    exit 2
+fi
 
 # Portable random integer in [min, max] inclusive.
 rand_range() {
@@ -74,28 +103,49 @@ JC=$(rand_range 3 8)
 JMIN=$(rand_range 40 80)
 JMAX=$(rand_range $((JMIN + 50)) 250)
 
-# S1, S2 with S1+56 != S2 invariant.
-while :; do
-    S1=$(rand_range 15 150)
-    S2=$(rand_range 15 150)
-    [ $((S1 + 56)) -ne "$S2" ] && break
-done
+# RandomTrailers alongside the wide AWG 2.0+ H ranges forces S1 == S2 == S3 == S4
+# (see the constraint notes above). AWG 1.5 is exempt: its H values are single
+# integers, so a wrong-offset read matches with probability 2^-32, not ~1.2%.
+need_equal_s=0
+if [ "$random_trailers" = "on" ] && [ "$has_2x" = 1 ]; then need_equal_s=1; fi
 
-if [ "$has_3x" = 1 ]; then
-    # AWG 3.x: S1..S4 must all be >= 12 — HeaderProtection reads its nonce from
-    # the first 12 bytes of the S-padding.
-    S3=$(rand_range 12 55)
-    S4=$(rand_range 12 27)
-    [ "$S1" -lt 12 ] && S1=$(rand_range 12 150)
-    [ "$S2" -lt 12 ] && S2=$(rand_range 12 150)
-    # Re-check the S1+56 invariant after any bump above.
-    while [ $((S1 + 56)) -eq "$S2" ]; do S2=$(rand_range 12 150); done
-elif [ "$version" = "2.0" ]; then
-    S3=$(rand_range 8 55)
-    S4=$(rand_range 4 27)
+if [ "$need_equal_s" = 1 ]; then
+    # One value for all four. Floor 12 satisfies HeaderProtection; ceiling 20
+    # keeps awg-quick's default 1420 MTU inside a 1500-byte IPv4 path.
+    #
+    # Equal S1/S2 would normally re-expose plain WireGuard's 56-byte gap between
+    # init (148+S1) and response (92+S2) packets, which is why the generator
+    # otherwise varies them. That does not apply here: RandomTrailers appends a
+    # random-length trailer to init, response and cookie packets, so their
+    # lengths are already randomized and the fixed delta is gone. Do not
+    # "restore" varied S values under RandomTrailers — it breaks the tunnel.
+    S_ALL=$(rand_range 12 20)
+    S1=$S_ALL; S2=$S_ALL; S3=$S_ALL; S4=$S_ALL
 else
-    S3=0
-    S4=0
+    # S1, S2 with the S1+56 != S2 invariant (equal sizes would make the padded
+    # init and response packets identical in length).
+    while :; do
+        S1=$(rand_range 15 150)
+        S2=$(rand_range 15 150)
+        [ $((S1 + 56)) -ne "$S2" ] && break
+    done
+
+    if [ "$has_3x" = 1 ]; then
+        # AWG 3.x: S1..S4 must all be >= 12 — HeaderProtection reads its nonce
+        # from the first 12 bytes of the S-padding.
+        S3=$(rand_range 12 55)
+        S4=$(rand_range 12 20)
+        [ "$S1" -lt 12 ] && S1=$(rand_range 12 150)
+        [ "$S2" -lt 12 ] && S2=$(rand_range 12 150)
+        # Re-check the S1+56 invariant after any bump above.
+        while [ $((S1 + 56)) -eq "$S2" ]; do S2=$(rand_range 12 150); done
+    elif [ "$version" = "2.0" ]; then
+        S3=$(rand_range 8 55)
+        S4=$(rand_range 4 20)
+    else
+        S3=0
+        S4=0
+    fi
 fi
 
 # H1..H4: split the 32-bit space into 4 quadrants, pick one range per quadrant.
@@ -140,8 +190,16 @@ if [ "$has_3x" = 1 ]; then
     # Curve25519 private key (`awg genkey`) — plain random bytes are correct.
     HPK=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
 
-    cp_lo=$(rand_range 16 72)
-    CONTENT_PADDING="${cp_lo}-$(rand_range $((cp_lo + 8)) 128)"
+    if [ "$content_padding" = "on" ]; then
+        cp_lo=$(rand_range 16 72)
+        CONTENT_PADDING="${cp_lo}-$(rand_range $((cp_lo + 8)) 128)"
+    else
+        # Off by default: measured at ~22% of download throughput, because
+        # randomizing every datagram's length defeats UDP_GRO batching on
+        # userspace clients. Pin an explicit 0 so the container does not
+        # auto-generate a range of its own when these vars are pasted in.
+        CONTENT_PADDING="0"
+    fi
 
     rt_lo=$(rand_range 4 6)
     REKEY_TIMEOUT="${rt_lo}-$((rt_lo + $(rand_range 1 4)))"
@@ -202,7 +260,11 @@ emit AWG_H4   H4    "$H4"
 
 if [ "$has_3x" = 1 ]; then
     emit AWG_HEADER_PROTECTION_KEY   HeaderProtectionKey    "$HPK"
-    emit AWG_CONTENT_PADDING         ContentPaddingAddition "$CONTENT_PADDING"
+    # A pinned 0 is what turns the container's auto-generation off, so it has to
+    # be emitted for compose/env. In .conf output the key is simply absent.
+    if [ "$CONTENT_PADDING" != "0" ] || [ "$format" != "conf" ]; then
+        emit AWG_CONTENT_PADDING ContentPaddingAddition "$CONTENT_PADDING"
+    fi
     emit AWG_REKEY_AFTER_TIME        RekeyAfterTime         "$REKEY_AFTER_TIME"
     emit AWG_REKEY_TIMEOUT           RekeyTimeout           "$REKEY_TIMEOUT"
     emit AWG_REJECT_AFTER_TIME       RejectAfterTime        "$REJECT_AFTER_TIME"
@@ -221,6 +283,11 @@ fi
 [ "$S2" -le 1188 ] || { echo "BUG: S2 > 1188" >&2; exit 1; }
 [ "$S3" -le 64 ]   || { echo "BUG: S3 > 64"   >&2; exit 1; }
 [ "$S4" -le 32 ]   || { echo "BUG: S4 > 32"   >&2; exit 1; }
+[ "$S4" -le 20 ]   || { echo "BUG: S4 > 20 — full-size packets fragment at awg-quick's default 1420 MTU" >&2; exit 1; }
+if [ "$need_equal_s" = 1 ]; then
+    { [ "$S1" = "$S2" ] && [ "$S2" = "$S3" ] && [ "$S3" = "$S4" ]; } \
+        || { echo "BUG: RandomTrailers with AWG 2.0+ H ranges requires S1==S2==S3==S4" >&2; exit 1; }
+fi
 [ "$JMIN" -lt "$JMAX" ] || { echo "BUG: Jmin >= Jmax" >&2; exit 1; }
 [ "$JMAX" -le 1280 ]    || { echo "BUG: Jmax > 1280"  >&2; exit 1; }
 [ $((S1 + 56)) -ne "$S2" ] || { echo "BUG: S1+56 == S2" >&2; exit 1; }

@@ -1,0 +1,56 @@
+{
+  "skill_name": "amneziawg-config",
+  "evals": [
+    {
+      "id": 0,
+      "name": "generate-3-peer-set",
+      "prompt": "I've got a VPS in Frankfurt running amneziawg and three devices to connect - my thinkpad, my pixel, and my partner's iphone. Endpoint is 198.51.100.71 on udp 51820. I want the newest obfuscation the Amnezia android app actually supports, and most of my usage is tethered off 4G so please don't give me something that's going to be slow. Write the configs somewhere I can find them.",
+      "expected_output": "A server conf plus three peer confs with equal S1-S4 (since RandomTrailers ends up on), ContentPaddingAddition unset or 0, S4 <= 20, an explicit MTU of 1280, H1-H4 in range format, and I1 in [Interface]. Should warn that all peers must share the obfuscation block.",
+      "files": [],
+      "assertions": [
+        "Produces a server config and exactly three peer configs (thinkpad, pixel, partner's iphone)",
+        "S1-S4 are all equal in every config IF RandomTrailers is enabled (not required when trailers are off)",
+        "ContentPaddingAddition is absent or set to 0 (never a non-zero range)",
+        "S4 is 20 or below",
+        "An explicit MTU line is present and set to 1280, given the 4G tethering",
+        "H1-H4 use the range format (lo-hi), not single integers, so the Amnezia app detects 2.0+",
+        "I1 appears in the [Interface] section, above any [Peer] section",
+        "The obfuscation block is byte-identical across the server config and all three peer configs",
+        "Explains that every peer must share the obfuscation values and that changing them invalidates distributed configs"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "diagnose-upload-collapse",
+      "prompt": "my awg tunnel is being weird. speedtest through it gets ~180mbit down but upload is like 2mbit, which is nuts because without the vpn i get 200/200. handshake connects instantly, pings are fine, small stuff works. its been like this since i regenerated my obfuscation params last week. heres the client conf:\n\n[Interface]\nAddress = 10.13.14.2\nPrivateKey = qKp/Dh4GPvn5Im07kdP9dRs1OvBZbKXZ0zWlUGE0WX8=\nDNS = 10.13.14.1\nJc = 6\nJmin = 76\nJmax = 236\nS1 = 49\nS2 = 57\nS3 = 37\nS4 = 27\nH1 = 205127846-255127846\nH2 = 592243917-642243917\nH3 = 1526611121-1576611121\nH4 = 1669322812-1719322812\nRandomTrailers = on\nDisableCookies = on\nI1 = <b 0xc3><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x449e><r 4><r 1178>\nHeaderProtectionKey = wF+rg2XYEPzgj2kvcapMZvZnK3CQNCdXhbTncQBtbuI=\nContentPaddingAddition = 30-114\nRekeyAfterTime = 107-121\nRekeyTimeout = 4-6\nRejectAfterTime = 170-183\nKeepaliveTimeout = 9-14\nMaxHandshakeAttempts = 14-20\n[Peer]\nPublicKey = OHQYpKI/8uF1vAJlJPmZEMJqsAAbAaSC09IIgax0DHg=\nPresharedKey = yvJiXTO+BHCHDX/QPIJ0otguRO/mKYj/4MyLWdvInV4=\nEndpoint = 198.51.100.24:32949\nAllowedIPs = 0.0.0.0/0",
+      "expected_output": "Identifies RandomTrailers with unequal S1-S4 as the cause of the asymmetric upload collapse, explains the >= length-match mechanism and the ~3.5% drop rate, and gives a corrected config with S1=S2=S3=S4. Should also flag ContentPaddingAddition+RandomTrailers together, and S4=27 vs MTU.",
+      "files": [],
+      "assertions": [
+        "Identifies RandomTrailers combined with unequal S1-S4 as the primary cause of the upload collapse",
+        "Explains the mechanism: trailers relax the receiver's packet-type check from exact length to a lower bound",
+        "Gives an approximate misclassification/packet-loss figure near 3.5%",
+        "Recommends setting S1 = S2 = S3 = S4 as the fix",
+        "Flags that ContentPaddingAddition and RandomTrailers are both set, which is its own problem",
+        "Flags S4=27 as an MTU/fragmentation issue (overhead 60+S4 exceeds the default 1420 tunnel MTU)",
+        "Explains why upload specifically is hit (the receiving side drops the misclassified packets)",
+        "Does not misattribute the primary cause to ISP, CPU, bandwidth limits or congestion",
+        "Provides a corrected configuration"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "explain-s4-mtu-relationship",
+      "prompt": "quick question - what should I actually set S4 to? I'm running amneziawg through a 4g router and everyone on the forums keeps saying lower your MTU to 1280 but nobody explains what that has to do with the amnezia params. is S4 related or am i conflating two things",
+      "expected_output": "Explains that S4 is prepended to every transport packet so overhead is 60+S4 on IPv4, that awg-quick's default 1420 ignores S4, and that S4 > 20 therefore fragments full-size packets on a 1500 path. Recommends S4 <= 20 and MTU 1280 for mobile. Should connect the two rather than treating them as unrelated.",
+      "files": [],
+      "assertions": [
+        "Confirms S4 and MTU are genuinely related rather than two separate concerns",
+        "States the per-packet overhead formula (60 + S4 on IPv4, or equivalent breakdown)",
+        "Notes that awg-quick/wg-quick derives MTU 1420 and does not account for S4",
+        "Recommends keeping S4 at 20 or below",
+        "Recommends MTU 1280 for the 4G/mobile path",
+        "Stays proportionate to a quick conversational question rather than dumping the full reference"
+      ]
+    }
+  ]
+}
