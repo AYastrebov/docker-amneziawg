@@ -19,6 +19,7 @@ AmneziaWG is WireGuard with added traffic obfuscation, so deep packet inspection
 - [Obfuscation parameters](#obfuscation-parameters)
 - [Custom protocol signatures (I1-I5)](#custom-protocol-signatures-i1-i5)
 - [Custom SERVERPORT](#custom-serverport)
+- [Speed and latency](#speed-and-latency)
 - [MTU](#mtu)
 - [Managing peers](#managing-peers)
 - [Support info](#support-info)
@@ -239,6 +240,8 @@ Either switch also works on its own, with any version:
 
 `RandomTrailers` changes the receive path as well as the send path. A peer without it expects handshake packets of exactly one length and drops the padded ones, so enable it on the server and every peer, or on none of them. Because the container writes it to every conf it generates, that holds automatically — but a peer conf you wrote by hand, or an older client, will not connect.
 
+That same receive-path change is why `RandomTrailers` needs `S1 = S2 = S3 = S4`. Once packet lengths are only a lower bound, the `H` ranges are all that separate one packet type from another, and unequal `S` values make three of the four checks read the type field at the wrong offset. Roughly 3.5% of data packets then get dropped as malformed handshakes. Set the four `S` values equal whenever you turn trailers on — see [Speed and latency](#speed-and-latency).
+
 Both options need 3.1-capable software wherever they are used: the bundled userspace `amneziawg-go`, or [kernel module](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module) v3.1.x on the host for the kernel datapath. On an older host module the tunnel fails to come up with `Unable to modify interface: Invalid argument` — the bundled `awg` parses the keys, and the kernel is what refuses them. (An `awg` build older than 3.1, which you would only meet outside this container, instead reports `Line unrecognized`.) The container reads `/sys/module/amneziawg/version` at startup and warns before either happens — but only when that file exists and holds a numeric version. A missing file, or a string it cannot read as a number (`v3.1.0`, a git-describe or distro-suffixed version), is passed over rather than guessed at, so no warning is not proof the module is new enough. Check it yourself if you are unsure.
 
 To turn a switch back off, set it to `off` rather than removing it — removing the variable means "reuse the saved value", the same as every other `AWG_*` setting. `off` omits the key from the generated configs rather than writing `= off`; since off is the endpoint default anyway the two are equivalent, and omitting it keeps the config readable by an older amneziawg that does not know the key at all. That makes `AWG_RANDOM_TRAILERS=off` the way to rescue a tunnel these switches have broken, without leaving `AWG_VERSION=3.1`.
@@ -271,6 +274,40 @@ ports:
   - 32948:51820/udp  # NOT 32948:32948/udp
 ```
 
+## Speed and latency
+
+Most obfuscation is free: `Jc`/`Jmin`/`Jmax`, `S1`-`S3` and `I1`-`I5` only touch handshake packets, and `H1`-`H4` just substitute a value into a field that already exists. Four settings cost something on every data packet — `S4`, `HeaderProtectionKey`, `ContentPaddingAddition` and `RandomTrailers`.
+
+Measured over a 22ms internet path (kernel-module server, userspace client, link capable of 107↑ / 181↓ Mbit/s):
+
+| Configuration | ↑ Mbit/s | ↓ Mbit/s | wire bytes per 64-byte ping |
+|---|---:|---:|---:|
+| plain WireGuard | 100.5 | 132.4 | 170 |
+| `HeaderProtectionKey` + `S=12` | 99.7 | 131.6 | 182 |
+| ↑ plus `RandomTrailers` | 99.7 | 125.3 | 537 |
+| ↑ plus `ContentPaddingAddition` | 99.7 | 102.4 | 186 |
+| `AWG_VERSION=3.1` as generated today | **1.7** | 115.0 | 258 |
+
+> [!WARNING]
+> **`RandomTrailers` requires `S1 = S2 = S3 = S4`.** Trailers relax the receiver's packet-type check from an exact length match to `>=`, leaving only the `H` range test to separate types. With `S1`-`S4` all different — which is what the container generates — three of the four checks read the type field at the wrong offset and misfire about 1.16% of the time each, so roughly **3.5% of data packets are dropped** and TCP collapses.
+>
+> Until the generator is fixed, pin the values yourself when using `AWG_VERSION=3.1`:
+>
+> ```yaml
+>       - AWG_VERSION=3.1
+>       - AWG_S1=12
+>       - AWG_S2=12
+>       - AWG_S3=12
+>       - AWG_S4=12
+>       - AWG_CONTENT_PADDING=0
+> ```
+
+`AWG_CONTENT_PADDING=0` is worth setting on its own: content padding costs about 22% of download throughput, because giving every datagram a different length defeats the receiving client's UDP batching. It also takes precedence over `RandomTrailers` on the send path while leaving the receive path's loose matching switched on, so enabling both gives you the cost of trailers and none of their benefit.
+
+Keep `AWG_S4` at **20 or below**. Per-packet overhead is `60 + S4`, so a larger value pushes a full-size packet past 1500 bytes at the default 1420 tunnel MTU and fragments every one of them — see [MTU](#mtu).
+
+Full analysis, source references and how to reproduce the measurements: [docs/awg-performance.md](docs/awg-performance.md).
+
 ## MTU
 
 The container does not write an `MTU` line, so `awg-quick` does what it does for plain WireGuard: it takes the MTU of the route to the endpoint (1500 on most links) and subtracts 80, giving a tunnel MTU of 1420. That 80 covers an IPv6 header, UDP and the 32-byte WireGuard transport framing. It does **not** cover the bytes AmneziaWG adds on top, and that is why users on AWG 3.x report that dropping the MTU to 1280 makes the tunnel faster — sometimes dramatically.
@@ -288,7 +325,7 @@ compared with plain WireGuard, where `S4` and `ContentPadding` are both zero. Th
 | Component | Size | On a full-size packet | Notes |
 |-----------|------|-----------------------|-------|
 | `S4` | random 4-27 (2.0) / 12-27 (3.x), max 32 | **Adds to the datagram** | The only part `awg-quick`'s 80-byte allowance does not know about. Also carries the header-protection nonce in 3.x, which is why it cannot go below 12 there |
-| `ContentPaddingAddition` (3.x) | random `lo-hi`, container default within 16-128 | Nothing — it is capped so `payload + padding ≤ MTU` | Only grows packets that are smaller than the MTU: ACKs, DNS, keepalives. Bandwidth overhead on small packets, never fragmentation |
+| `ContentPaddingAddition` (3.x) | random `lo-hi`, container default within 16-128 | A few bytes | Capped at the largest datagram seen so far, not at the MTU — and that high-water mark counts packets *received* as well as sent, so it drifts above the current packet size and full-size packets do grow a little. Not enough to fragment, but it costs ~22% of download by breaking the receiver's UDP batching. Set `AWG_CONTENT_PADDING=0` |
 | `RandomTrailers` (3.1) on transport | random `0 … window − packet` | Nothing — capped at the largest datagram already seen | Only active on transport packets when `ContentPaddingAddition = 0`. With it, a 52-byte TCP ACK can become a ~1400-byte datagram |
 
 So with the default 1420 tunnel MTU a full-size packet becomes `1420 + 60 + S4` bytes over IPv4, and `1420 + 80 + S4` over IPv6. Over IPv4 that exceeds 1500 as soon as `S4 > 20`; over an IPv6 endpoint it exceeds 1500 for any `S4 > 0`. The random `S4` the container picks is above 20 roughly 30 % of the time in 2.0 (7 of 24 values) and 44 % in 3.x (7 of 16) — which is why one deployment is fine and the next one is "slow for no reason".

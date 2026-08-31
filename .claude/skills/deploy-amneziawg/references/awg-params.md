@@ -1,6 +1,9 @@
 # AWG Obfuscation Parameters — Deployment Reference
 
-This reference is specific to deployment-time decisions. For implementation/code-level details, see the project's `CONTEXT.md` and `.claude/skills/docker-amneziawg/references/awg-parameters.md`.
+This reference is specific to deployment-time decisions. For implementation/code-level details, see the project's `CONTEXT.md` and `.claude/skills/docker-amneziawg/references/awg-parameters.md`. For the throughput cost of each parameter, see [`docs/awg-performance.md`](../../../../docs/awg-performance.md).
+
+> [!WARNING]
+> **`AWG_VERSION=3.1` as the container generates it today is slow.** It emits `RandomTrailers=on` together with independently-drawn `S1`-`S4`, which makes the receiver misclassify and drop ~3.5% of transport packets — measured upload falls from ~100 to ~2 Mbit/s. When deploying 3.1, pin `S1 = S2 = S3 = S4` explicitly (`scripts/gen-awg-params.sh --version 3.1` now does this). Details and measurements: [`docs/awg-performance.md`](../../../../docs/awg-performance.md).
 
 ## Relationship to upstream Amnezia docs
 
@@ -40,7 +43,7 @@ Override only if:
 | Param | Default (random) | Notes |
 |---|---|---|
 | `AWG_HEADER_PROTECTION_KEY` | 32 random bytes, base64 | Encrypts packet headers. **Must be identical on server and every client.** Requires S1-S4 ≥ 12 — the nonce is read from the first 12 bytes of the S-padding |
-| `AWG_CONTENT_PADDING` | `lo-hi` within 16-128 | Extra random padding per transport packet. `0` disables |
+| `AWG_CONTENT_PADDING` | `lo-hi` within 16-128 | Extra random padding per transport packet. `0` disables. **Recommend `0`** — measured at ~22% of download throughput, and it suppresses `RandomTrailers` on the send path while leaving the receive path's loose matching on |
 | `AWG_REKEY_AFTER_TIME` | `lo-hi` within 100-145s | WireGuard default is 120 |
 | `AWG_REKEY_TIMEOUT` | `lo-hi` within 4-10s | Default 5 |
 | `AWG_REJECT_AFTER_TIME` | `lo-hi`, derived | Default 180. Must exceed RekeyAfterTime.hi, and KeepaliveTimeout.lo + RekeyTimeout.lo |
@@ -57,6 +60,25 @@ Timers are **ranges**, and each endpoint draws its own value from within the ran
 | `AWG_DISABLE_COOKIES` | No cookie-reply messages under load, removing a distinctive probe response. Costs WireGuard's DoS mitigation | No |
 
 Both accept `on`/`off` and work with **any** `AWG_VERSION`, so `2.0` + `AWG_RANDOM_TRAILERS=on` is a valid combination. Only `on` writes a key; unset or `off` omits it entirely rather than writing `= off`.
+
+#### `RandomTrailers` requires `S1 = S2 = S3 = S4`
+
+Turning trailers on relaxes the receiver's packet-type check from an exact length match to `>=`, leaving only the `H` range test to tell types apart. With `S1`-`S4` all different, three of the four branches read the type field at the wrong offset; garbage lands inside a 50M-wide `H` range about 1.16% of the time each, so ~3.5% of transport packets get dropped as malformed handshakes. Measured: **upload 100 → 2 Mbit/s**.
+
+Whenever you deploy `AWG_RANDOM_TRAILERS=on` alongside AWG 2.0+ (which uses wide `H` ranges), pin all four `S` values to the same number:
+
+```yaml
+      - AWG_RANDOM_TRAILERS=on
+      - AWG_S1=12
+      - AWG_S2=12
+      - AWG_S3=12
+      - AWG_S4=12
+      - AWG_CONTENT_PADDING=0
+```
+
+`scripts/gen-awg-params.sh --version 3.1` emits exactly this shape. AWG 1.5 is exempt — its `H` values are single integers, so a wrong-offset read matches with probability 2⁻³², not 1.16%.
+
+Do **not** set `AWG_CONTENT_PADDING` alongside trailers: it takes precedence on the send path and suppresses them, but the receiver still runs the loose match, so you get the risk and none of the obfuscation. The generator refuses that combination.
 
 `off` is also the way to turn a switch back off — an absent variable means "reuse the saved value" from `/config/server/awg_params`, and an empty one is indistinguishable from absent because s6 drops empty variables from `container_environment`.
 
@@ -76,7 +98,7 @@ All values are integers unless noted.
 | `AWG_S1` | 0-1132 | 15-150 | Init packet padding. **S1 + 56 must ≠ S2** (otherwise looks like base WireGuard). |
 | `AWG_S2` | 0-1188 | 15-150 | Response packet padding. |
 | `AWG_S3` | 0-64 | 8-55 (2.0) / 12-55 (3.x) / 0 (1.5) | Cookie message padding. |
-| `AWG_S4` | 0-32 | 4-27 (2.0) / 12-27 (3.x) / 0 (1.5) | Transport packet padding. **Per-packet overhead — keep small** (every data packet pays this cost). |
+| `AWG_S4` | 0-32 | 4-20 (2.0) / 12-20 (3.x) / 0 (1.5) | Transport packet padding. **Per-packet overhead — keep small** (every data packet pays this cost). Keep **≤ 20**: overhead is `60 + S4`, so anything above 20 pushes a full-size packet past 1500 at `awg-quick`'s default 1420 MTU and fragments every one of them. |
 | `AWG_H1`-`H4` | ≥ 5 | Quadrant ranges (2.0) / single ints (1.5) | All four must be unique. Values 1-4 are reserved for standard WireGuard header types. |
 | `AWG_I1`-`I5` | tag syntax string | QUIC Initial for I1 in 2.0, all empty in 1.5 | I1 must be set for I2-I5 to be meaningful. Tag syntax may contain `=`, parse with `cut -d= -f2-` not `-f2`. |
 

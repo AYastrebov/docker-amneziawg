@@ -29,13 +29,15 @@ Adds padding bytes to different message types to obscure their true size.
 | `AWG_S1` | int | Random 15-150 | ≤ 1132 (1280-148) | Handshake initiation |
 | `AWG_S2` | int | Random 15-150 | ≤ 1188 (1280-92) | Handshake response |
 | `AWG_S3` | int | Random 8-55 (2.0) / 0 (1.5) | ≤ 64 | Cookie reply |
-| `AWG_S4` | int | Random 4-27 (2.0) / 0 (1.5) | ≤ 32 | Transport data (per-packet overhead, keep small) |
+| `AWG_S4` | int | Random 4-27 (2.0) / 0 (1.5) | ≤ 32, prefer ≤ 20 | Transport data (per-packet overhead, keep small). Above 20, full-size packets fragment at the default 1420 MTU |
 
 **Critical constraint**: `S1 + 56 ≠ S2` (these values must not have this relationship)
 
 **How it works**: Each parameter specifies how many random padding bytes to add to that message type. This prevents DPI from identifying messages by their characteristic sizes.
 
-**Note**: S3 and S4 are AWG 2.0 extensions (set to 0 in AWG 1.5). S4 should be kept small (4-27) since it adds overhead to every data packet. S3 can be slightly larger (8-55) since cookie replies are rare.
+**Note**: S3 and S4 are AWG 2.0 extensions (set to 0 in AWG 1.5). S4 should be kept small (4-20) since it adds overhead to every data packet and eats MTU headroom. S3 can be slightly larger (8-55) since cookie replies are rare.
+
+**With `RandomTrailers` on, all four must be equal** (`S1 == S2 == S3 == S4`) under AWG 2.0+. Trailers turn the receiver's exact-length packet-type check into a lower bound, so the type field's offset — which is the relevant `S` value — is all that keeps the four branches apart. Unequal values cost ~3.5% of transport packets. AWG 1.5 is exempt because its `H` values are single integers rather than 50M-wide ranges. See [`docs/awg-performance.md`](../../../../docs/awg-performance.md).
 
 ### Header Obfuscation (H1, H2, H3, H4)
 
@@ -270,7 +272,13 @@ Reduce `Jc` value. More junk packets = more processing overhead.
 Ensure `JMAX` isn't too large. Very large junk packets may be dropped by some networks.
 
 ### Slow throughput, handshake fine
-Almost always MTU. `awg-quick` derives 1420 without accounting for `S4`, so full-size datagrams exceed 1500 when `S4 > 20` (IPv4) or on any IPv6 endpoint, and fragment. Use `MTU = 1280` on mobile/PPPoE/unknown paths, or `1500 − 60 − S4` on a clean IPv4 path. `ContentPaddingAddition` and transport `RandomTrailers` are capped to the MTU / observed window and cannot fragment; they only inflate small packets. Details: README "MTU", CONTEXT.md "MTU and per-packet overhead".
+Check these three, in order. Full analysis and measurements: [`docs/awg-performance.md`](../../../../docs/awg-performance.md).
+
+1. **Upload far worse than download, `RandomTrailers` on.** Trailers relax the receiver's packet-type check from an exact length match to `>=` (`receive.c:51,62,73`), leaving the `H` ranges as the only discriminator. Each type's branch reads the type field at its own `S` offset, so unequal `S1`-`S4` make three branches read garbage, which lands in a 50M-wide `H` range ~1.16% of the time each — **~3.5% of transport packets dropped**, upload ~100 → ~2 Mbit/s. Fix with `S1 == S2 == S3 == S4` (or `H1..H4 = 1,2,3,4`, or trailers off). The container's generator draws `S1`-`S4` independently and turns trailers on under 3.1, so every generated 3.1 config hits this.
+2. **Download ~22% low.** `ContentPaddingAddition` gives every datagram a different length, defeating `UDP_GRO` coalescing on userspace clients (`conn/gso_linux.go` batches only consecutive equal-sized datagrams). Set `AWG_CONTENT_PADDING=0`. Setting it alongside `RandomTrailers` is strictly worse than either alone: it suppresses trailers on send (`send.c:254`) but not the loose receive matching (`receive.c:47`).
+3. **MTU.** `awg-quick` derives 1420 without accounting for `S4`, so full-size datagrams exceed 1500 when `S4 > 20` (IPv4) or on any IPv6 endpoint, and fragment. Use `MTU = 1280` on mobile/PPPoE/unknown paths, or `1500 − 60 − S4` on a clean IPv4 path. Details: README "MTU", CONTEXT.md "MTU and per-packet overhead".
+
+`RandomTrailers` cannot fragment (it short-circuits on full-size packets, `peer.h:105`), but it triples small-packet wire cost — 537 bytes for a 64-byte ping versus 182. `ContentPaddingAddition` is capped at the observed UDP window rather than the MTU, so it does grow full-size packets slightly.
 
 ## References
 

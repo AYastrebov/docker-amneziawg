@@ -111,6 +111,11 @@ This is the part most users don't understand. Read `references/awg-params.md` fo
 
 **Default recommendation: don't touch any AWG_* params.** The container auto-generates good values on first start (S1-S4, H1-H4 as quadrant ranges, I1 as a QUIC Initial packet matching RFC 9000). All of these get persisted to `/config/server/awg_params` and reused on restart.
 
+> [!WARNING]
+> **That default is not safe for `AWG_VERSION=3.1` yet.** Auto-generation emits `RandomTrailers=on` alongside independently-drawn `S1`-`S4` and a `ContentPaddingAddition` range. `RandomTrailers` relaxes the receiver's packet-type check to a length lower bound, so with unequal `S` values ~3.5% of transport packets are misclassified and dropped — **measured upload falls from ~100 to ~2 Mbit/s**, and `ContentPaddingAddition` costs a further ~22% of download.
+>
+> If the user wants 3.1, **pin the parameters** with `scripts/gen-awg-params.sh --version 3.1` instead of leaving them to the container. That emits `S1 = S2 = S3 = S4` and `AWG_CONTENT_PADDING=0`. Full analysis and measurements: [`docs/awg-performance.md`](../../../docs/awg-performance.md).
+
 Ask the user only:
 
 1. **AWG version**:
@@ -119,7 +124,7 @@ Ask the user only:
    |---|---|---|
    | `2.0` (default) | Full DPI evasion — I1-I5 signatures, H1-H4 ranges | AmneziaVPN app ≥ 4.8.12.9 |
    | `3.0` | Adds header protection, content padding, randomized timers | 3.0-capable client |
-   | `3.1` | 3.0 plus `RandomTrailers` — handshake packets lose their fixed length | 3.1-capable client |
+   | `3.1` | 3.0 plus `RandomTrailers` — handshake packets lose their fixed length. **Must be pinned, not auto-generated** (see warning above) | 3.1-capable client |
    | `1.5` | Legacy, easier to fingerprint | Any AmneziaVPN version |
 
    Recommend `2.0` unless the user knows every client is on 3.x software. The newer modes buy real DPI resistance but fail closed: a client that cannot parse the keys will not connect at all.
@@ -137,10 +142,13 @@ Ask the user only:
    - **Generate now and pin in compose** — useful if the user wants to back up the docker-compose.yml and recreate the same setup elsewhere. Use `scripts/gen-awg-params.sh` to produce a valid set respecting all constraints:
 
      ```bash
-     ./scripts/gen-awg-params.sh --version 3.1                        # 3.0 params + RandomTrailers
+     ./scripts/gen-awg-params.sh --version 3.1                        # 3.0 params + RandomTrailers, S1=S2=S3=S4
      ./scripts/gen-awg-params.sh --version 3.1 --disable-cookies on   # ...and no cookie replies
      ./scripts/gen-awg-params.sh --version 2.0 --random-trailers on   # switch without the 3.x param set
+     ./scripts/gen-awg-params.sh --version 3.0 --content-padding on   # opt back into ContentPaddingAddition
      ```
+
+     The script enforces the performance constraints as well as the protocol ones: `S1 = S2 = S3 = S4` whenever `RandomTrailers` is on with AWG 2.0+ H ranges, `S4 ≤ 20` so `awg-quick`'s default 1420 MTU does not fragment, and `AWG_CONTENT_PADDING=0` unless explicitly asked for. It refuses `--content-padding on` together with `--random-trailers on`, since content padding suppresses the trailers on send but not on receive.
    - **User provides specific values** — for matching an existing AmneziaWG deployment. Validate against constraints before writing.
 
 If the user picks "generate now", explain: server and **every** client must use identical S1-S4, H1-H4, I1-I5 values, plus `HeaderProtectionKey` and `RandomTrailers` when those are in play. Jc/Jmin/Jmax and the 3.x timer ranges may differ per side — each endpoint draws its own value from the range. `DisableCookies` is per-endpoint. Changing any of the shared values later means redistributing every peer config.
