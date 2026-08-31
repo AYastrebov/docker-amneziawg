@@ -186,7 +186,7 @@ Every value here is optional and random by default. Server and clients must agre
 | `-e AWG_S1=` | Random 15-150 | Init padding bytes (max 1132). S1+56 must not equal S2 |
 | `-e AWG_S2=` | Random 15-150 | Response padding bytes (max 1188) |
 | `-e AWG_S3=` | Random 8-55 (2.0) / 12-55 (3.0) / 0 (1.5) | Cookie padding bytes (max 64) |
-| `-e AWG_S4=` | Random 4-27 (2.0) / 12-27 (3.0) / 0 (1.5) | Transport padding bytes (max 32). Per-packet overhead, keep it small |
+| `-e AWG_S4=` | Random 4-20 (2.0) / 12-20 (3.x) / 0 (1.5) | Transport padding bytes (max 32). Per-packet overhead, keep it small |
 | `-e AWG_H1=` | Auto range (2.0) / int (1.5) | Header obfuscation. H1-H4 must be unique, all >= 5 |
 | `-e AWG_H2=` | Auto range (2.0) / int (1.5) | AWG 2.0 uses range format (e.g. `90666522-140666522`) |
 | `-e AWG_H3=` | Auto range (2.0) / int (1.5) | Single integers cause the Amnezia app to report AWG 1.5 |
@@ -286,23 +286,16 @@ Measured over a 22ms internet path (kernel-module server, userspace client, link
 | `HeaderProtectionKey` + `S=12` | 99.7 | 131.6 | 182 |
 | ↑ plus `RandomTrailers` | 99.7 | 125.3 | 537 |
 | ↑ plus `ContentPaddingAddition` | 99.7 | 102.4 | 186 |
-| `AWG_VERSION=3.1` as generated today | **1.7** | 115.0 | 258 |
+| `RandomTrailers` with unequal `S1`-`S4` | **1.7** | 115.0 | 258 |
 
-> [!WARNING]
-> **`RandomTrailers` requires `S1 = S2 = S3 = S4`.** Trailers relax the receiver's packet-type check from an exact length match to `>=`, leaving only the `H` range test to separate types. With `S1`-`S4` all different — which is what the container generates — three of the four checks read the type field at the wrong offset and misfire about 1.16% of the time each, so roughly **3.5% of data packets are dropped** and TCP collapses.
+> [!IMPORTANT]
+> **`RandomTrailers` requires `S1 = S2 = S3 = S4`.** Trailers relax the receiver's packet-type check from an exact length match to `>=`, leaving only the `H` range test to separate types. With `S1`-`S4` all different, three of the four checks read the type field at the wrong offset and misfire about 1.16% of the time each, so roughly **3.5% of data packets are dropped** and TCP collapses — that last row above.
 >
-> Until the generator is fixed, pin the values yourself when using `AWG_VERSION=3.1`:
->
-> ```yaml
->       - AWG_VERSION=3.1
->       - AWG_S1=12
->       - AWG_S2=12
->       - AWG_S3=12
->       - AWG_S4=12
->       - AWG_CONTENT_PADDING=0
-> ```
+> The container handles this for you: with trailers on it draws a single value for all four, and warns if you pin them unequal yourself. You only need to think about it when writing configs by hand, or when adopting parameters generated elsewhere.
 
-`AWG_CONTENT_PADDING=0` is worth setting on its own: content padding costs about 22% of download throughput, because giving every datagram a different length defeats the receiving client's UDP batching. It also takes precedence over `RandomTrailers` on the send path while leaving the receive path's loose matching switched on, so enabling both gives you the cost of trailers and none of their benefit.
+Versions before this fix generated unequal `S` values under `AWG_VERSION=3.1`. Existing installs keep their saved parameters and are not regenerated, so if you deployed 3.1 earlier, check `/config/server/awg_params` — if `AWG_S1`-`AWG_S4` differ, set them to one value explicitly and redistribute the peer configs.
+
+`AWG_CONTENT_PADDING` defaults to `0` when trailers are on, and is worth `0` generally: content padding costs about 22% of download throughput, because giving every datagram a different length defeats the receiving client's UDP batching. It also takes precedence over `RandomTrailers` on the send path while leaving the receive path's loose matching switched on, so enabling both gives you the cost of trailers and none of their benefit.
 
 Keep `AWG_S4` at **20 or below**. Per-packet overhead is `60 + S4`, so a larger value pushes a full-size packet past 1500 bytes at the default 1420 tunnel MTU and fragments every one of them — see [MTU](#mtu).
 
@@ -324,7 +317,7 @@ compared with plain WireGuard, where `S4` and `ContentPadding` are both zero. Th
 
 | Component | Size | On a full-size packet | Notes |
 |-----------|------|-----------------------|-------|
-| `S4` | random 4-27 (2.0) / 12-27 (3.x), max 32 | **Adds to the datagram** | The only part `awg-quick`'s 80-byte allowance does not know about. Also carries the header-protection nonce in 3.x, which is why it cannot go below 12 there |
+| `S4` | random 4-20 (2.0) / 12-20 (3.x), max 32 | **Adds to the datagram** | The only part `awg-quick`'s 80-byte allowance does not know about. Also carries the header-protection nonce in 3.x, which is why it cannot go below 12 there |
 | `ContentPaddingAddition` (3.x) | random `lo-hi`, container default within 16-128 | A few bytes | Capped at the largest datagram seen so far, not at the MTU — and that high-water mark counts packets *received* as well as sent, so it drifts above the current packet size and full-size packets do grow a little. Not enough to fragment, but it costs ~22% of download by breaking the receiver's UDP batching. Set `AWG_CONTENT_PADDING=0` |
 | `RandomTrailers` (3.1) on transport | random `0 … window − packet` | Nothing — capped at the largest datagram already seen | Only active on transport packets when `ContentPaddingAddition = 0`. With it, a 52-byte TCP ACK can become a ~1400-byte datagram |
 

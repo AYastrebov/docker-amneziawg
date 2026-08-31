@@ -205,10 +205,17 @@ def check(c, rep):
     s4 = s["S4"] or 0
     overhead4, overhead6 = 60 + s4, 80 + s4
     if mtu is None:
-        rep.warn(f"No MTU set. wg-quick/awg-quick will derive 1420 on a 1500-byte "
-                 f"link, which ignores S4 — a full-size packet becomes "
-                 f"{1420 + overhead4} bytes over IPv4 and fragments. Set MTU "
-                 f"explicitly (1280 is safe everywhere)")
+        derived = 1420 + overhead4
+        if derived > 1500:
+            rep.warn(f"No MTU set. wg-quick/awg-quick derives 1420 on a 1500-byte link "
+                     f"and ignores S4, so a full-size packet becomes {derived} bytes over "
+                     f"IPv4 and fragments even on a clean path. Set MTU explicitly "
+                     f"(1280 is safe everywhere)")
+        else:
+            rep.warn(f"No MTU set. wg-quick/awg-quick derives 1420; with S4={s4} that is "
+                     f"{derived} bytes over IPv4, which fits a 1500-byte path — but any "
+                     f"client on a smaller one (PPPoE 1492, LTE ~1400, DS-Lite 1280) will "
+                     f"fragment. Set MTU explicitly (1280 is safe everywhere)")
     else:
         if mtu + overhead4 > 1500:
             rep.error(f"MTU {mtu} with S4={s4} makes a full-size packet "
@@ -255,11 +262,25 @@ def check(c, rep):
 
 def cross_check(confs, rep):
     for key in SHARED:
-        seen = {}
+        seen, missing = {}, []
         for c in confs:
             v = c.get(key)
-            if v is not None:
+            if v is None:
+                missing.append(c.path)
+            else:
                 seen.setdefault(v, []).append(c.path)
+        if not seen:
+            continue        # nobody sets it — consistent by omission
+        # A key present in one config and absent from another is just as fatal as
+        # two different values, and it is the more common way a peer conf goes
+        # bad (hand-edited, or copied from a config generated at another time).
+        # RandomTrailers is exempt: absence there means "off", a real value, and
+        # the dedicated check below compares it with that default applied.
+        if missing and key != "RandomTrailers":
+            present = sorted({p for ps in seen.values() for p in ps})
+            rep.error(f"{key} is set in {', '.join(present)} but missing from "
+                      f"{', '.join(missing)} — every endpoint must carry the same "
+                      f"obfuscation values, so this tunnel will not come up")
         if len(seen) > 1:
             detail = "; ".join(f"{v!r} in {', '.join(p)}" for v, p in seen.items())
             rep.error(f"{key} differs between configs — every endpoint must match: "

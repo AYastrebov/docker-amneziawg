@@ -21,6 +21,10 @@
 #   --allowed-ips CIDR[,CIDR]   Peer AllowedIPs                  (default 0.0.0.0/0)
 #   --mtu N                     Tunnel MTU                       (default 1280)
 #   --outdir DIR                Where to write configs           (default ./awg-configs)
+#   --nat-iface IFACE           Emit PostUp/PostDown masquerade rules for IFACE.
+#                               Without it the rules are written commented out,
+#                               since peers default to AllowedIPs 0.0.0.0/0 and
+#                               would otherwise blackhole after handshaking.
 #   --params-only               Emit only the obfuscation block
 #   --format conf|compose|env   Output shape for --params-only   (default conf)
 #
@@ -60,27 +64,32 @@ set -euo pipefail
 version="2.0"; peers_arg="1"; endpoint=""; subnet="10.13.13.0"; port=""
 dns="1.1.1.1,1.0.0.1"; allowed_ips="0.0.0.0/0"; mtu="1280"; outdir="./awg-configs"
 params_only=0; format="conf"; random_trailers=""; disable_cookies="off"
-content_padding="off"; h_format="range"; use_psk=1
+content_padding="off"; h_format="range"; use_psk=1; nat_iface=""
+ep_host=""; ep_port=""
 
 die() { echo "error: $*" >&2; exit 2; }
+# Without this, a flag whose value was forgotten dies on `set -u` with
+# "$2: unbound variable", which reads as a script crash rather than a typo.
+need_val() { [ $# -ge 2 ] || die "$1 requires a value"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --version) version="$2"; shift 2 ;;
-        --peers) peers_arg="$2"; shift 2 ;;
-        --endpoint) endpoint="$2"; shift 2 ;;
-        --subnet) subnet="$2"; shift 2 ;;
-        --port) port="$2"; shift 2 ;;
-        --dns) dns="$2"; shift 2 ;;
-        --allowed-ips) allowed_ips="$2"; shift 2 ;;
-        --mtu) mtu="$2"; shift 2 ;;
-        --outdir) outdir="$2"; shift 2 ;;
+        --version) need_val "$@"; version="$2"; shift 2 ;;
+        --peers) need_val "$@"; peers_arg="$2"; shift 2 ;;
+        --endpoint) need_val "$@"; endpoint="$2"; shift 2 ;;
+        --subnet) need_val "$@"; subnet="$2"; shift 2 ;;
+        --port) need_val "$@"; port="$2"; shift 2 ;;
+        --dns) need_val "$@"; dns="$2"; shift 2 ;;
+        --allowed-ips) need_val "$@"; allowed_ips="$2"; shift 2 ;;
+        --mtu) need_val "$@"; mtu="$2"; shift 2 ;;
+        --outdir) need_val "$@"; outdir="$2"; shift 2 ;;
         --params-only) params_only=1; shift ;;
-        --format) format="$2"; shift 2 ;;
-        --random-trailers) random_trailers="$2"; shift 2 ;;
-        --disable-cookies) disable_cookies="$2"; shift 2 ;;
-        --content-padding) content_padding="$2"; shift 2 ;;
-        --h-format) h_format="$2"; shift 2 ;;
+        --format) need_val "$@"; format="$2"; shift 2 ;;
+        --random-trailers) need_val "$@"; random_trailers="$2"; shift 2 ;;
+        --disable-cookies) need_val "$@"; disable_cookies="$2"; shift 2 ;;
+        --content-padding) need_val "$@"; content_padding="$2"; shift 2 ;;
+        --h-format) need_val "$@"; h_format="$2"; shift 2 ;;
+        --nat-iface) need_val "$@"; nat_iface="$2"; shift 2 ;;
         --no-psk) use_psk=0; shift ;;
         -h|--help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit 0 ;;
         *) die "unknown argument: $1" ;;
@@ -107,6 +116,11 @@ if [ "$content_padding" = "on" ] && [ "$random_trailers" = "on" ]; then
     die "ContentPaddingAddition suppresses RandomTrailers on send but not on receive.
        Pick one. See references/performance.md."
 fi
+# ContentPaddingAddition only exists in the 3.x parameter set. Silently dropping
+# the flag would hand back a config that looks like it honoured the request.
+if [ "$content_padding" = "on" ] && [ "$has_3x" = 0 ]; then
+    die "--content-padding requires --version 3.0 or 3.1 (ContentPaddingAddition is a 3.x key; got $version)"
+fi
 if [ "$random_trailers" = "on" ] && [ "$has_2x" = 0 ]; then
     echo "note: RandomTrailers with AWG 1.5 — single-integer H values keep type" >&2
     echo "      detection unambiguous, so equal S values are not required here." >&2
@@ -114,8 +128,32 @@ fi
 if [ "$params_only" = 0 ] && [ -z "$endpoint" ]; then
     die "--endpoint HOST:PORT is required (or use --params-only)"
 fi
-[ -n "$port" ] || port="${endpoint##*:}"
-case "$port" in ''|*[!0-9]*) port=51820 ;; esac
+
+# Split HOST:PORT. A bare host writes an Endpoint that awg-quick rejects, and a
+# bare IPv6 address is worse: "${endpoint##*:}" would silently yield the last
+# hextet as the ListenPort. Demand an explicit port, bracketed for IPv6.
+if [ -n "$endpoint" ]; then
+    case "$endpoint" in
+        \[*\]:*)  ep_host="${endpoint%]:*}"; ep_host="${ep_host#\[}"
+                  ep_port="${endpoint##*]:}" ;;
+        *:*:*)    die "IPv6 endpoint needs brackets and a port: --endpoint '[$endpoint]:51820'" ;;
+        *:*)      ep_host="${endpoint%:*}"; ep_port="${endpoint##*:}" ;;
+        *)        die "--endpoint must be HOST:PORT (got '$endpoint')" ;;
+    esac
+    [ -n "$ep_host" ] || die "--endpoint has an empty host: '$endpoint'"
+    case "$ep_port" in
+        ''|*[!0-9]*) die "--endpoint port must be numeric (got '$ep_port')" ;;
+    esac
+    { [ "$ep_port" -ge 1 ] && [ "$ep_port" -le 65535 ]; } \
+        || die "--endpoint port out of range: $ep_port"
+fi
+
+# ListenPort defaults to the port peers dial, which is right unless the server
+# sits behind a port-forward; --port overrides it.
+[ -n "$port" ] || port="${ep_port:-51820}"
+case "$port" in
+    ''|*[!0-9]*) die "--port must be numeric (got '$port')" ;;
+esac
 
 # ---------------------------------------------------------------- randomness
 rand_range() {   # inclusive [min,max]; $RANDOM is 15 bits so chain two
@@ -316,6 +354,11 @@ case "$peers_arg" in
     *) PEER_NAMES=(); for i in $(seq 1 "$peers_arg"); do PEER_NAMES+=("peer$i"); done ;;
 esac
 [ "${#PEER_NAMES[@]}" -ge 1 ] || die "no peers requested"
+# Peers occupy .2 upwards in a /24, so .254 is the last usable host and 253 is
+# the ceiling. Without this, larger counts silently emit .255 and then invalid
+# addresses above .255.
+[ "${#PEER_NAMES[@]}" -le 253 ] \
+    || die "${#PEER_NAMES[@]} peers exceeds the 253 a /24 holds; use a larger --subnet scheme"
 
 net="${subnet%.*}"                       # 10.13.13.0 -> 10.13.13
 [ "$net" != "$subnet" ] || die "--subnet must look like 10.13.13.0"
@@ -332,6 +375,21 @@ server_conf="$outdir/wg0.conf"
     printf 'ListenPort = %s\n' "$port"
     printf 'PrivateKey = %s\n' "$SRV_PRIV"
     printf 'MTU = %s\n' "$mtu"
+    # Peers below get AllowedIPs 0.0.0.0/0 by default, so without IP forwarding
+    # and NAT the tunnel handshakes and then blackholes every packet. Emit the
+    # rules when the egress interface is known; otherwise leave a commented
+    # template rather than guessing an interface name that is wrong on most
+    # hosts (eth0 on cloud images, ens3/enp1s0 elsewhere).
+    if [ -n "$nat_iface" ]; then
+        printf 'PostUp = iptables -A FORWARD -i %%i -j ACCEPT; iptables -A FORWARD -o %%i -j ACCEPT; iptables -t nat -A POSTROUTING -o %s -j MASQUERADE\n' "$nat_iface"
+        printf 'PostDown = iptables -D FORWARD -i %%i -j ACCEPT; iptables -D FORWARD -o %%i -j ACCEPT; iptables -t nat -D POSTROUTING -o %s -j MASQUERADE\n' "$nat_iface"
+    else
+        printf '# No routing/NAT configured. Peers use AllowedIPs %s, so unless this host\n' "$allowed_ips"
+        printf '# already forwards and masquerades, the tunnel will connect and then drop all\n'
+        printf '# traffic. Re-run with --nat-iface <egress-interface>, or uncomment and edit:\n'
+        printf '#PostUp = iptables -A FORWARD -i %%i -j ACCEPT; iptables -A FORWARD -o %%i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE\n'
+        printf '#PostDown = iptables -D FORWARD -i %%i -j ACCEPT; iptables -D FORWARD -o %%i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE\n'
+    fi
     printf '\n# AmneziaWG %s obfuscation — identical on every peer\n' "$version"
     awg_block
 } > "$server_conf"
@@ -378,5 +436,16 @@ RandomTrailers=$random_trailers  DisableCookies=$disable_cookies  ContentPadding
 
 Every peer must keep the obfuscation block byte-for-byte identical to the
 server's. Changing any of S/H/I later invalidates configs already handed out.
-Verify with:  awg-lint.sh $server_conf
+Verify with:  awg-lint.py $server_conf $outdir/${PEER_NAMES[0]}.conf
 EOF
+
+if [ -z "$nat_iface" ]; then
+    cat >&2 <<EOF
+
+Routing is NOT set up. Peers use AllowedIPs $allowed_ips, so the server also needs:
+  sysctl -w net.ipv4.ip_forward=1        (persist in /etc/sysctl.d/)
+  the PostUp/PostDown rules commented at the top of wg0.conf, with your real
+  egress interface — or re-run with --nat-iface <interface>
+Without both, the tunnel handshakes and then drops all forwarded traffic.
+EOF
+fi

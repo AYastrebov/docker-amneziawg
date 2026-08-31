@@ -88,7 +88,7 @@ For detailed parameter docs, see [references/awg-parameters.md](references/awg-p
 | `AWG_S1` | Random 15-150 | <= 1132, **S1+56 must not equal S2** |
 | `AWG_S2` | Random 15-150 | <= 1188 |
 | `AWG_S3` | Random 8-55 (2.0) / 12-55 (3.x) / 0 (1.5) | <= 64 |
-| `AWG_S4` | Random 4-27 (2.0) / 12-27 (3.x) / 0 (1.5) | <= 32, prefer **<= 20** (above that, full-size packets fragment at the default 1420 MTU), **per-packet overhead — keep small** |
+| `AWG_S4` | Random 4-20 (2.0) / 12-20 (3.x) / 0 (1.5) | <= 32, prefer **<= 20** (above that, full-size packets fragment at the default 1420 MTU), **per-packet overhead — keep small** |
 | `AWG_H1-H4` | Range (2.0) / int (1.5) | >= 5, all unique, non-overlapping |
 | `AWG_I1-I5` | Auto QUIC Initial (2.0) / empty (1.5) | In `[Interface]` before `[Peer]` |
 

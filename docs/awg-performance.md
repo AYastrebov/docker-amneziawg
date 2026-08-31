@@ -60,7 +60,7 @@ Setting `H1`-`H4` to `1,2,3,4` fixes it too, by shrinking each range to a single
 bool random_trailers = wg->random_trailers;   // not gated on CPA
 ```
 
-Setting both — which is what `AWG_VERSION=3.1` currently produces — gives you the loose matching and its misclassification risk with none of the trailer obfuscation. It is the worst of the two.
+Setting both gives you the loose matching and its misclassification risk with none of the trailer obfuscation. It is the worst of the two, which is why the container now leaves `ContentPaddingAddition` at `0` whenever trailers are on.
 
 ## Measurements
 
@@ -141,9 +141,15 @@ H4 = 1669322812-1719322812
 I1 = <b 0xc3><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x449e><r 4><r 1178>
 HeaderProtectionKey = <32 random bytes, base64>
 RandomTrailers = on
-DisableCookies = on
+MTU = 1280       # or path MTU − 60 − S4; awg-quick's 1420 ignores S4
 # ContentPaddingAddition deliberately NOT set
+# DisableCookies deliberately NOT set — it costs nothing in throughput and
+# gives up WireGuard's DoS mitigation, so enable it only for DPI reasons
 ```
+
+`MTU` is per-endpoint and does not have to match. 1280 assumes a 1500-byte path;
+a client that is itself behind a 1280-byte path needs `1280 − 60 − S4` = 1208
+instead, so measure rather than assume — see [MTU](#mtu) above.
 
 Cost against plain WireGuard: **−1% upload, −5% download, +0.3ms RTT.**
 

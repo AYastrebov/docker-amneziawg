@@ -117,7 +117,7 @@ All parameters are optional and auto-generated with random values if not set. Se
 | S1 | <= 1132 (default 15-150) | Init padding. **S1+56 must not equal S2** |
 | S2 | <= 1188 (default 15-150) | Response padding |
 | S3 | <= 64 (default 8-55 in 2.0, 0 in 1.5) | Cookie padding |
-| S4 | <= 32 (default 4-27 in 2.0, 0 in 1.5) | Transport padding — **per-packet overhead, keep small**. Keep <= 20 or full-size packets fragment at the default 1420 MTU |
+| S4 | <= 32 (default 4-20 in 2.0, 12-20 in 3.x, 0 in 1.5) | Transport padding — **per-packet overhead, keep small**. Keep <= 20 or full-size packets fragment at the default 1420 MTU |
 | H1-H4 | >= 5, all unique | Header obfuscation. AWG 2.0: range format (e.g. `90666522-140666522`). AWG 1.5: single integers |
 | I1-I5 | tag syntax | CPS packets. I1 required for I2-I5. AWG 2.0 auto-generates QUIC Initial for I1 |
 
@@ -161,7 +161,7 @@ Handshake-only, zero steady-state cost: `Jc`/`Jmin`/`Jmax`, `S1`-`S3`, `I1`-`I5`
 
 **`RandomTrailers` requires `S1 == S2 == S3 == S4` under AWG 2.0+.** Trailers relax the receiver's type check from `skb->len == expected_len` to `>=` (`receive.c:51,62,73`), leaving only the `H` range test to discriminate. The four branches read the type field at their own `S` offset, so unequal values make three of them read garbage, which falls inside a 50M-wide `H` range with p ≈ 1.16% each — about **3.5% of transport packets dropped**. Mathis at 22ms RTT predicts 2.7 Mbit/s; measured 1.7-2.4 against ~100 Mbit/s baseline. Equal `S` values make every branch read the true type, and non-overlapping `H` ranges then exclude it deterministically. Narrow `H` (`1,2,3,4`) fixes it independently.
 
-`generate_awg_params()` currently draws `AWG_S1`-`AWG_S4` independently (`init-amneziawg-confs/run:171-190`) and defaults `AWG_RANDOM_TRAILERS=on` under 3.1 (line 239), so every generated 3.1 config hits this. It also always generates a `ContentPaddingAddition` range (lines 126-129), which suppresses trailers on send (`send.c:254`) but not the loose receive matching (`receive.c:47`) — the worst of both. Not yet fixed in the container; the deploy skill's `gen-awg-params.sh` produces a correct pinned set.
+`generate_awg_params()` handles this: when `AWG_RANDOM_TRAILERS` resolves to `on` and `awg_has_2x_features`, one value is drawn for all four S parameters (12-20), and an explicitly pinned unequal set produces a startup warning. The 3.1 switch normalization runs **before** the S values are drawn so the constraint is known in time — moving it back below reintroduces the bug silently. `generate_awg3_params()` likewise defaults `AWG_CONTENT_PADDING` to `0` under trailers, since content padding suppresses them on send (`send.c:254`) while the receive path stays loose (`receive.c:47`), and warns if the user pins both.
 
 `ContentPaddingAddition` costs ~22% of download throughput: randomizing every datagram length defeats `UDP_GRO` coalescing on userspace clients (`conn/gso_linux.go`), which only batches consecutive equal-sized datagrams.
 

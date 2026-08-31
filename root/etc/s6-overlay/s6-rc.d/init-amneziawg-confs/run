@@ -122,11 +122,25 @@ generate_awg3_params() {
     # a symmetric ChaCha20 header-protection key).
     AWG_HEADER_PROTECTION_KEY=${AWG_HEADER_PROTECTION_KEY:-$(awg genpsk)}
 
-    # Extra random zero-padding appended to each transport packet
+    # Extra random padding on each transport packet.
+    #
+    # Left at 0 when RandomTrailers is on, because the two are mutually exclusive
+    # in a way that only hurts: content padding takes precedence on the *send*
+    # path and suppresses the trailers entirely, while the *receive* path reads
+    # the trailers flag directly and still relaxes its packet-type matching. You
+    # get the risk of trailers and none of their obfuscation. Content padding
+    # also costs ~22% of download throughput on its own, because a different
+    # length on every datagram defeats UDP_GRO batching on userspace clients.
+    # An explicit AWG_CONTENT_PADDING still wins — this only sets the default.
+    # See docs/awg-performance.md.
     if [[ -z "${AWG_CONTENT_PADDING}" ]]; then
-        local _lo
-        _lo=$(shuf -i 16-72 -n 1)
-        AWG_CONTENT_PADDING="${_lo}-$(shuf -i $((_lo + 8))-128 -n 1)"
+        if [[ "${AWG_RANDOM_TRAILERS}" == "on" ]]; then
+            AWG_CONTENT_PADDING="0"
+        else
+            local _lo
+            _lo=$(shuf -i 16-72 -n 1)
+            AWG_CONTENT_PADDING="${_lo}-$(shuf -i $((_lo + 8))-128 -n 1)"
+        fi
     fi
     if [[ -z "${AWG_REKEY_TIMEOUT}" ]]; then
         local _lo
@@ -164,12 +178,64 @@ generate_awg_params() {
     AWG_VERSION=${AWG_VERSION:-2.0}
     echo "**** AmneziaWG version: ${AWG_VERSION} ****"
 
+    # AWG 3.1 interface switches. Upstream treats these as independent of the
+    # parameter set, so they are honoured with any AWG_VERSION; AWG_VERSION=3.1
+    # is simply a preset that turns RandomTrailers on. DisableCookies stays
+    # opt-in — it gives up WireGuard's built-in DoS mitigation and, unlike
+    # RandomTrailers, does not have to match between ends.
+    # Normalize what was actually asked for, then let the 3.1 preset fill in a
+    # default. Only the explicit value is persisted below: a RandomTrailers
+    # that came from AWG_VERSION=3.1 must not outlive a downgrade to 2.0, or a
+    # user dropping back to fix an old client would still emit a key that
+    # client cannot parse.
+    # Resolved here, ahead of the S values, because RandomTrailers constrains
+    # how S1-S4 may be drawn (see below).
+    local _rt_explicit _dc_explicit _s_all
+    _rt_explicit=$(normalize_awg_switch AWG_RANDOM_TRAILERS "${AWG_RANDOM_TRAILERS:-}")
+    _dc_explicit=$(normalize_awg_switch AWG_DISABLE_COOKIES "${AWG_DISABLE_COOKIES:-}")
+    AWG_RANDOM_TRAILERS="${_rt_explicit}"
+    AWG_DISABLE_COOKIES="${_dc_explicit}"
+    # "off" is a real value here, not an absence, so it survives s6 and beats
+    # both the saved value and this preset.
+    if [[ "${AWG_VERSION}" == "3.1" ]]; then
+        AWG_RANDOM_TRAILERS=${AWG_RANDOM_TRAILERS:-on}
+    fi
+
     # Core parameters (all versions)
     AWG_JC=${AWG_JC:-$(shuf -i 3-8 -n 1)}
     AWG_JMIN=${AWG_JMIN:-$(shuf -i 40-80 -n 1)}
     AWG_JMAX=${AWG_JMAX:-$(shuf -i 80-250 -n 1)}
-    AWG_S1=${AWG_S1:-$(shuf -i 15-150 -n 1)}
-    AWG_S2=${AWG_S2:-$(shuf -i 15-150 -n 1)}
+
+    # RandomTrailers relaxes the receiver's packet-type check from an exact
+    # length match to a lower bound, which leaves the H ranges as the only thing
+    # separating message types — and each type's check reads the type field at
+    # *its own* S offset. With unequal S values three of the four checks read the
+    # wrong offset and land inside a ~50M-wide H range about 1.16% of the time
+    # each, so ~3.5% of transport packets are dropped as malformed handshakes and
+    # upload collapses (~100 -> ~2 Mbit/s) while download barely moves. Equal
+    # values make every check read the true type field, which the non-overlapping
+    # H ranges then reject cleanly. See docs/awg-performance.md.
+    # AWG 1.5 is exempt: its single-integer H values are 1 wide, not 50M, so a
+    # wrong-offset read matches with probability 2^-32.
+    if [[ "${AWG_RANDOM_TRAILERS}" == "on" ]] && awg_has_2x_features; then
+        # 12 satisfies the HeaderProtection floor; <= 20 keeps a full-size packet
+        # inside 1500 at awg-quick's derived 1420 MTU (overhead is 60 + S4).
+        _s_all=$(shuf -i 12-20 -n 1)
+        AWG_S1=${AWG_S1:-$_s_all}
+        AWG_S2=${AWG_S2:-$_s_all}
+        AWG_S3=${AWG_S3:-$_s_all}
+        AWG_S4=${AWG_S4:-$_s_all}
+        if [[ "$AWG_S1" != "$AWG_S2" || "$AWG_S2" != "$AWG_S3" || "$AWG_S3" != "$AWG_S4" ]]; then
+            echo "**** WARNING: RandomTrailers is on but S1-S4 are not all equal ****"
+            echo "**** (S1=$AWG_S1 S2=$AWG_S2 S3=$AWG_S3 S4=$AWG_S4). Around 3.5% of transport ****"
+            echo "**** packets will be dropped and upload will collapse. Set AWG_S1, ****"
+            echo "**** AWG_S2, AWG_S3 and AWG_S4 to the same value, or turn off      ****"
+            echo "**** AWG_RANDOM_TRAILERS. See docs/awg-performance.md.             ****"
+        fi
+    else
+        AWG_S1=${AWG_S1:-$(shuf -i 15-150 -n 1)}
+        AWG_S2=${AWG_S2:-$(shuf -i 15-150 -n 1)}
+    fi
 
     if awg_has_2x_features; then
         # AWG 2.0/3.x: H1-H4 as non-overlapping range pairs (quadrant strategy, ~50M width each).
@@ -178,16 +244,23 @@ generate_awg_params() {
         _h2_lo=$(shuf -i 536870912-1023741823 -n 1);  AWG_H2=${AWG_H2:-${_h2_lo}-$((_h2_lo + 50000000))}
         _h3_lo=$(shuf -i 1073741824-1560612735 -n 1); AWG_H3=${AWG_H3:-${_h3_lo}-$((_h3_lo + 50000000))}
         _h4_lo=$(shuf -i 1610612736-2097483647 -n 1); AWG_H4=${AWG_H4:-${_h4_lo}-$((_h4_lo + 50000000))}
+        # S4 is capped at 20 rather than the protocol maximum of 32 because it is
+        # paid on every transport packet, in bandwidth and in MTU headroom:
+        # overhead is 60 + S4 over IPv4, and awg-quick derives a 1420 tunnel MTU
+        # without accounting for S4 at all. Above 20, every full-size packet
+        # exceeds 1500 and fragments, which many mobile networks and CGNATs drop
+        # outright — "connects fine, downloads crawl". S3 is unconstrained here
+        # since cookie replies are rare. See docs/awg-performance.md.
         if awg_has_3x_params; then
             # AWG 3.x: S1-S4 must all be >= 12 — the HeaderProtection nonce is read
             # from the first 12 bytes of the S-padding (amneziawg-go rejects the
-            # config otherwise). S4 stays <= 32 per protocol cap.
+            # config otherwise).
             AWG_S3=${AWG_S3:-$(shuf -i 12-55 -n 1)}
-            AWG_S4=${AWG_S4:-$(shuf -i 12-27 -n 1)}
+            AWG_S4=${AWG_S4:-$(shuf -i 12-20 -n 1)}
         else
             # AWG 2.0: S3/S4 padding
             AWG_S3=${AWG_S3:-$(shuf -i 8-55 -n 1)}
-            AWG_S4=${AWG_S4:-$(shuf -i 4-27 -n 1)}
+            AWG_S4=${AWG_S4:-$(shuf -i 4-20 -n 1)}
         fi
         generate_default_signatures
     else
@@ -218,25 +291,15 @@ generate_awg_params() {
         AWG_MAX_HANDSHAKE_ATTEMPTS=""
     fi
 
-    # AWG 3.1 interface switches. Upstream treats these as independent of the
-    # parameter set, so they are honoured with any AWG_VERSION; AWG_VERSION=3.1
-    # is simply a preset that turns RandomTrailers on. DisableCookies stays
-    # opt-in — it gives up WireGuard's built-in DoS mitigation and, unlike
-    # RandomTrailers, does not have to match between ends.
-    # Normalize what was actually asked for, then let the 3.1 preset fill in a
-    # default. Only the explicit value is persisted below: a RandomTrailers
-    # that came from AWG_VERSION=3.1 must not outlive a downgrade to 2.0, or a
-    # user dropping back to fix an old client would still emit a key that
-    # client cannot parse.
-    local _rt_explicit _dc_explicit
-    _rt_explicit=$(normalize_awg_switch AWG_RANDOM_TRAILERS "${AWG_RANDOM_TRAILERS:-}")
-    _dc_explicit=$(normalize_awg_switch AWG_DISABLE_COOKIES "${AWG_DISABLE_COOKIES:-}")
-    AWG_RANDOM_TRAILERS="${_rt_explicit}"
-    AWG_DISABLE_COOKIES="${_dc_explicit}"
-    # "off" is a real value here, not an absence, so it survives s6 and beats
-    # both the saved value and this preset.
-    if [[ "${AWG_VERSION}" == "3.1" ]]; then
-        AWG_RANDOM_TRAILERS=${AWG_RANDOM_TRAILERS:-on}
+    # Only reachable when the user pinned AWG_CONTENT_PADDING themselves — the
+    # default above already stands down for RandomTrailers.
+    if [[ "${AWG_RANDOM_TRAILERS}" == "on" ]] && [[ -n "${AWG_CONTENT_PADDING}" ]] &&
+       [[ "${AWG_CONTENT_PADDING}" != "0" && "${AWG_CONTENT_PADDING}" != "0-0" ]]; then
+        echo "**** WARNING: ContentPaddingAddition=${AWG_CONTENT_PADDING} is set together with  ****"
+        echo "**** RandomTrailers=on. Content padding wins on the send path and suppresses ****"
+        echo "**** the trailers, but the receiver still relaxes its packet-type matching — ****"
+        echo "**** the risk of trailers with none of the obfuscation, plus roughly 22% of   ****"
+        echo "**** download throughput. Set AWG_CONTENT_PADDING=0 to fix.                  ****"
     fi
 
     # Save params to file for persistence.

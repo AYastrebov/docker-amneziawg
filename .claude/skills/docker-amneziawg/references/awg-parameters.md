@@ -29,7 +29,7 @@ Adds padding bytes to different message types to obscure their true size.
 | `AWG_S1` | int | Random 15-150 | ≤ 1132 (1280-148) | Handshake initiation |
 | `AWG_S2` | int | Random 15-150 | ≤ 1188 (1280-92) | Handshake response |
 | `AWG_S3` | int | Random 8-55 (2.0) / 0 (1.5) | ≤ 64 | Cookie reply |
-| `AWG_S4` | int | Random 4-27 (2.0) / 0 (1.5) | ≤ 32, prefer ≤ 20 | Transport data (per-packet overhead, keep small). Above 20, full-size packets fragment at the default 1420 MTU |
+| `AWG_S4` | int | Random 4-20 (2.0) / 12-20 (3.x) / 0 (1.5) | ≤ 32, prefer ≤ 20 | Transport data (per-packet overhead, keep small). Above 20, full-size packets fragment at the default 1420 MTU |
 
 **Critical constraint**: `S1 + 56 ≠ S2` (these values must not have this relationship)
 
@@ -72,7 +72,7 @@ AWG_JMAX=${AWG_JMAX:-$(shuf -i 80-250 -n 1)}
 AWG_S1=${AWG_S1:-$(shuf -i 15-150 -n 1)}
 AWG_S2=${AWG_S2:-$(shuf -i 15-150 -n 1)}
 AWG_S3=${AWG_S3:-$(shuf -i 8-55 -n 1)}   # AWG 2.0
-AWG_S4=${AWG_S4:-$(shuf -i 4-27 -n 1)}   # AWG 2.0, keep small (per-packet)
+AWG_S4=${AWG_S4:-$(shuf -i 4-20 -n 1)}   # AWG 2.0; <=20 so the derived 1420 MTU does not fragment
 
 # Headers (min 5 to avoid collision with standard WireGuard values 1-4)
 AWG_H1=${AWG_H1:-$(shuf -i 5-2147483647 -n 1)}
