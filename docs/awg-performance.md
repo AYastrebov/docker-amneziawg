@@ -124,13 +124,20 @@ and `S4 = 12`, a capture of a bidirectional bulk transfer showed **118,559 of
 path MTU to the byte. The `MTU − 80` default (1420 on a 1500 link) is
 `set_mtu_up()` in `awg-quick`, confirmed by bringing up a conf with no `MTU` line.
 
-The remaining 6 datagrams are an open anomaly: server-side kernel-module packets
-of 1264-1443 bytes payload, emitted in bursts that coincide with
-handshake/rekey attempts, exceeding the `udp_window` cap that should bound every
-trailer. They grow with session age and would fragment on narrow paths. At
-~0.005% of packets the throughput impact is nil, and handshakes retry — but it
-means "trailers can never fragment" is not strictly true for kernel-side
-handshake packets, and the cause is not yet identified.
+The remaining 6 datagrams — server-side packets of 1264-1443 bytes payload in
+bursts coinciding with handshake attempts — were an open anomaly when first
+captured, and have since been root-caused upstream: kernel modules before
+**v3.1.20260906** appended a random trailer to *every* raw buffer sent to a
+peer, because `wg_socket_send_buffer_to_peer()` applied the trailer
+unconditionally — including to I1-I5 signature packets and dummy junk packets
+(fixed in `4569c4c6`, "do not append random trailers to I1-I5 and dummy junk
+packets"). A handshake burst sends exactly one I1 plus `Jc` junk packets, which
+matches the observed 6-7 outliers per burst with `Jc = 6`. The sizes exceeding
+the `udp_window` cap we computed from current source reflect the measured
+module (v3.1.20260812) predating the current cap helpers as well. Upgrade the
+host module to **v3.1.20260906 or newer** to eliminate the oversized packets;
+on older modules they cost at most rekey latency on narrow paths, since
+handshakes retry.
 
 `awg-quick` writes `route MTU − 80` = 1420 and knows nothing about `S4`, so on a 1500-byte IPv4 path:
 
