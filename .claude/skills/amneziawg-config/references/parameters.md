@@ -46,6 +46,14 @@ Random bytes prepended to each message type so the fixed WireGuard packet sizes 
 headroom. Keep it at **20 or below** so a full-size packet still fits a 1500-byte path at the
 default 1420 tunnel MTU.
 
+The maxima above are **documented conventions, not runtime checks**: the Go implementation
+parses `s1`-`s4` as bare 16-bit integers with no range validation (`device/uapi.go`), and the
+kernel module only enforces the `≥ 12` header-protection floor (`netlink.c`). The S1/S2 caps are
+arithmetic against the 1280-byte IPv6 minimum MTU (`1132 = 1280 − 148`, `1188 = 1280 − 92` — the
+largest prefix that still lets a handshake cross any path unfragmented). Staying inside them is
+still right — other clients may validate, and exceeding them breaks handshakes on narrow paths —
+but do not expect the endpoint to reject an out-of-range value for you.
+
 Three constraints govern the rest:
 
 - **`S1 + 56 ≠ S2`.** Plain WireGuard's initiation and response differ by 56 bytes. If

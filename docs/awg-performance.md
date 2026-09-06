@@ -115,6 +115,23 @@ The 22% figure is measured directly and reproduced. The GRO attribution is infer
 
 Per-packet overhead is `20 (IPv4) + 8 (UDP) + 32 (AWG header + tag) + S4` = **`60 + S4`**.
 
+The 32 is structural, not folklore: `struct message_data` is a 4-byte type + 4-byte
+key index + 8-byte counter = 16, and `noise_encrypted_len` adds a 16-byte
+Poly1305 tag (`messages.h:106-114,25`). Verified on the wire: with tunnel MTU 1208
+and `S4 = 12`, a capture of a bidirectional bulk transfer showed **118,559 of
+118,565 full-size datagrams at exactly 1252 bytes of UDP payload** —
+`1208 + 12 + 16 + 16` — which with 28 bytes of IP+UDP lands on the 1280-byte
+path MTU to the byte. The `MTU − 80` default (1420 on a 1500 link) is
+`set_mtu_up()` in `awg-quick`, confirmed by bringing up a conf with no `MTU` line.
+
+The remaining 6 datagrams are an open anomaly: server-side kernel-module packets
+of 1264-1443 bytes payload, emitted in bursts that coincide with
+handshake/rekey attempts, exceeding the `udp_window` cap that should bound every
+trailer. They grow with session age and would fragment on narrow paths. At
+~0.005% of packets the throughput impact is nil, and handshakes retry — but it
+means "trailers can never fragment" is not strictly true for kernel-side
+handshake packets, and the cause is not yet identified.
+
 `awg-quick` writes `route MTU − 80` = 1420 and knows nothing about `S4`, so on a 1500-byte IPv4 path:
 
 - `S4 ≤ 20` → 1420 fits. **Keep `S4` at or below 20 and the default MTU is safe.**
