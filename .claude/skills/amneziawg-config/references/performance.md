@@ -150,8 +150,11 @@ Both `ContentPaddingAddition` and `RandomTrailers` cap their padding at `udp_win
 where `udp_window` is a high-water mark over datagrams both sent *and* received (`send.c:243`,
 `receive.c:571`), starting at 500. It is **not** capped at the MTU, which is a common
 misconception. Because receiving a padded datagram raises the mark, content padding does grow
-full-size sends slightly — measured 1228 → 1229-1244 on the wire. Neither mechanism can cause
-fragmentation, but neither is quite as free as "only pads small packets" implies.
+full-size sends slightly — measured 1228 → 1229-1244 on the wire. For *transport* packets the cap
+holds and fragmentation stays impossible in practice (verified: 99.995% of captured datagrams at
+exactly the cap) — but not absolutely: the handshake-burst outliers above were observed *over* the
+cap, so treat "cannot fragment" as a transport-path property, not a guarantee about every packet
+the tunnel emits. Neither mechanism is quite as free as "only pads small packets" implies either.
 
 ## Recommended shape
 

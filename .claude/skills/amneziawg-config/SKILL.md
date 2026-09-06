@@ -130,11 +130,13 @@ dropped or rate-limited by many mobile networks, CGNATs and DPI boxes, which sho
 "connects fine, small things work, downloads crawl".
 
 Keep `S4 ≤ 20`, and write an explicit `MTU`. **1280 is the right default** — its wire packets
-(`1340 + S4`) clear PPPoE, LTE and every ordinary path. On a known-clean IPv4 path you can use
-`1500 − 60 − S4`. But the IPv6 1280-byte floor guarantees the packet *on the wire*, not the tunnel
-MTU: if the path is itself ~1280 (DS-Lite, tunnel-in-tunnel), use `path − 60 − S4` — 1208 at
-`S4 = 12` — or full-size packets still fragment. When a user reports slowness despite MTU 1280,
-measure the path (`ping -M do` binary search) before concluding MTU is not the problem.
+(`1340 + S4` over an IPv4 endpoint, `1360 + S4` over IPv6) clear PPPoE, LTE and every ordinary
+path. On a known-clean 1500-byte path you can use `1500 − 60 − S4` (IPv4) or `1500 − 80 − S4`
+(IPv6). But the IPv6 1280-byte floor guarantees the packet *on the wire*, not the tunnel MTU: if
+the path is itself ~1280 (DS-Lite, tunnel-in-tunnel), use `path − 60 − S4` for an IPv4 endpoint
+(1208 at `S4 = 12`) or `path − 80 − S4` for IPv6 (1188) — or full-size packets still fragment.
+When a user reports slowness despite MTU 1280, measure the path (`ping -M do` binary search)
+before concluding MTU is not the problem.
 
 ## Which values must match
 

@@ -178,11 +178,12 @@ WireGuard but not for `S4`. Guidance:
 | Clean IPv4 path, known `S4` | `1500 − 60 − S4` |
 | IPv6 endpoint | `1500 − 80 − S4` |
 
-1280 clears every ordinary path — its wire packets are `1340 + S4` bytes, under PPPoE's 1492 and
-typical LTE. Note the IPv6 1280-byte floor guarantees the packet **on the wire**, not the tunnel
-MTU: a path that is itself ~1280 (DS-Lite, tunnel-in-tunnel) needs `path − 60 − S4` (1208 at
-`S4 = 12`) or full-size packets still fragment — verified by capture on exactly such a path.
-Below that, lower values only add overhead.
+1280 clears every ordinary path — its wire packets are `1340 + S4` bytes over an IPv4 endpoint
+(`1360 + S4` over IPv6), under PPPoE's 1492 and typical LTE. Note the IPv6 1280-byte floor
+guarantees the packet **on the wire**, not the tunnel MTU: a path that is itself ~1280 (DS-Lite,
+tunnel-in-tunnel) needs `path − 60 − S4` for an IPv4 endpoint (1208 at `S4 = 12`) or
+`path − 80 − S4` for IPv6 (1188), or full-size packets still fragment — the IPv4 case verified by
+capture on exactly such a path. Below that, lower values only add overhead.
 
 ## Version detection
 
