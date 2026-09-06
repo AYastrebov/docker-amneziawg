@@ -104,7 +104,8 @@ All clients and server must use identical values. Key constraints:
 ### Workflows
 
 **`docker-build.yml`** — main build pipeline:
-- Push to `master`/`main` → builds multi-arch (`amd64`, `arm64`) and pushes to `ghcr.io/ayastrebov/docker-amneziawg:latest` + upstream tools version tag, then creates a GitHub Release tagged with the tools version (skipped if the release already exists)
+- A `changes` gate job diffs each push/PR first: only `Dockerfile`, `root/**`, `.dockerignore` and the workflow itself are image content, so docs/skills/compose-only pushes skip the build and release entirely. The gate is an explicit `git diff` job, NOT an `on.push.paths` filter — path filters share the `push` block with the `v*` tag trigger and behave ambiguously for tag pushes, which could silently break semver releases. Tags, `workflow_dispatch`, and diffs with no reachable base all fail open (build)
+- Push to `master`/`main` touching image paths → builds multi-arch (`amd64`, `arm64`) and pushes to `ghcr.io/ayastrebov/docker-amneziawg:latest` + upstream tools version tag, then creates a GitHub Release tagged with the tools version (skipped if the release already exists)
 - `v*` tags → semantic version tags (`1.0.0`, `1.0`, `1`)
 - PRs → smoke tests only (single-platform `--load` build, no multi-arch QEMU): binaries, s6 structure, service types, dependency chain, CoreDNS, branding
 - Upstream versions are read from the Dockerfile `ARG` pins (single source of truth); `workflow_dispatch` accepts `amneziawg_go_version` and `amneziawg_tools_version` overrides for one-off builds

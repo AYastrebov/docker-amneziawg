@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `docker-build.yml` now gates the multi-arch build and release behind a `changes` job that diffs the push: only `Dockerfile`, `root/**`, `.dockerignore` and the workflow itself are image content, so docs/skills/compose-only merges to master no longer rebuild and republish `:latest`. Tag pushes, `workflow_dispatch` and diffs with no reachable base always build. Implemented as an explicit `git diff` gate rather than an `on.push.paths` filter, which shares the push block with the `v*` tag trigger and is ambiguous for tag pushes
 - `docs/awg-performance.md`: measured throughput and latency cost of every obfuscation parameter, traced to upstream kernel-module and `amneziawg-go` source, with reproduction steps
 - `README.md` "Speed and latency" section, and data-path cost notes in `CONTEXT.md` and both skill references
 - `scripts/gen-awg-params.sh` (deploy skill) now enforces the performance constraints as well as the protocol ones: `S1 == S2 == S3 == S4` when `RandomTrailers` is on with AWG 2.0+ H ranges, `S4 <= 20` so the default 1420 MTU does not fragment, and `AWG_CONTENT_PADDING=0` unless `--content-padding on` is passed. It refuses `--content-padding on` together with `--random-trailers on`

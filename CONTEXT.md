@@ -179,7 +179,8 @@ Guidance (documented in README "MTU"): 1280 for mobile/PPPoE/unknown paths (IPv6
 
 ### docker-build.yml
 
-- Push to `master`/`main` -> multi-arch build (`amd64`, `arm64`) -> `ghcr.io/ayastrebov/docker-amneziawg:latest` + tools version tag
+- A `changes` gate job runs first and skips build+release when a push/PR touches nothing image-affecting. Image content is `Dockerfile`, `root/**`, `.dockerignore` and the workflow itself; docs, skills and compose examples never reach the image. Tag pushes, `workflow_dispatch` and unreachable-base diffs fail open (always build)
+- Push to `master`/`main` touching image paths -> multi-arch build (`amd64`, `arm64`) -> `ghcr.io/ayastrebov/docker-amneziawg:latest` + tools version tag
 - `v*` tags -> semantic version tags (`1.0.0`, `1.0`, `1`)
 - PRs -> smoke tests only (single-platform `--load` build): binaries, s6 structure, service types, dependency chain, CoreDNS, branding
 - `workflow_dispatch` accepts `amneziawg_go_version` and `amneziawg_tools_version` overrides

@@ -136,7 +136,8 @@ Tunnel startup fails without `--device /dev/net/tun` — expected in testing.
 ## GitHub Actions Workflows
 
 ### docker-build.yml
-- Push to `master`/`main` -> builds multi-arch and tags as `latest` + tools version
+- A `changes` gate diffs each push/PR: only `Dockerfile`, `root/**`, `.dockerignore` and the workflow itself trigger a build. Docs/skills-only pushes skip build+release. Tags and `workflow_dispatch` always build
+- Push to `master`/`main` touching image paths -> builds multi-arch and tags as `latest` + tools version
 - Push `v*` tags -> semantic version tags (1.0.0, 1.0, 1)
 - Pull requests -> single-platform smoke test (no push)
 - `workflow_dispatch` accepts version overrides

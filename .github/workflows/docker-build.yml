@@ -28,7 +28,67 @@ env:
   # workflow_dispatch inputs override them for one-off builds.
 
 jobs:
+  # Decide whether this event touches the image at all. Only Dockerfile, root/,
+  # .dockerignore and this workflow end up in (or shape) the published image —
+  # docs, skills and compose examples do not, so a push that changes only those
+  # must not rebuild and republish :latest / the tools-version tag.
+  #
+  # This is a diff gate rather than an `on.push.paths` filter on purpose: the
+  # push block also carries the v* tag trigger, and path filters behave
+  # ambiguously for tag pushes (no reliable before/after diff), which could
+  # silently break semver releases. An explicit gate fails open instead.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.filter.outputs.image }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check whether image-affecting paths changed
+        id: filter
+        run: |
+          IMAGE_PATHS='^(Dockerfile$|root/|\.dockerignore$|\.github/workflows/docker-build\.yml$)'
+
+          # Anything that is not a plain branch push builds unconditionally:
+          # tag pushes (semver releases), manual dispatch (version overrides).
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.ref_type }}" == "tag" ]]; then
+            echo "image=true" >> "$GITHUB_OUTPUT"
+            echo "build: yes (${{ github.event_name }}/${{ github.ref_type }})" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.sha }}"
+          fi
+
+          # New branch or force-push where the old tip is gone: no diff to
+          # inspect, so fail open and build.
+          if [[ "$BASE" =~ ^0+$ ]] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "image=true" >> "$GITHUB_OUTPUT"
+            echo "build: yes (no comparable base commit)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+          echo "changed files:"; echo "$CHANGED" | sed 's/^/  /'
+          if echo "$CHANGED" | grep -qE "$IMAGE_PATHS"; then
+            echo "image=true" >> "$GITHUB_OUTPUT"
+            echo "build: yes (image-affecting paths changed)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "image=false" >> "$GITHUB_OUTPUT"
+            echo "build: skipped — no changes to Dockerfile, root/, .dockerignore or this workflow" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   build:
+    needs: changes
+    if: needs.changes.outputs.image == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
