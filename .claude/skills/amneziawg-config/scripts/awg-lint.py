@@ -204,18 +204,25 @@ def check(c, rep):
     mtu = c.int_of("MTU")
     s4 = s["S4"] or 0
     overhead4, overhead6 = 60 + s4, 80 + s4
+    # The MTU advice deliberately avoids "1280 is safe everywhere": tunnel MTU
+    # 1280 emits (1340+S4)-byte wire packets, which still fragment on a path
+    # that is itself ~1280 (DS-Lite, tunnel-in-tunnel). The safe rule is
+    # path - 60 - S4 (IPv4) / path - 80 - S4 (IPv6); 1280 is only the value
+    # that clears *ordinary* paths.
+    mtu_advice = (f"Set MTU explicitly: 1280 clears ordinary paths; a constrained "
+                  f"path needs path - {overhead4} (IPv4) / path - {overhead6} (IPv6) "
+                  f"— e.g. a true 1280-byte path needs {1280 - overhead4}, not 1280")
     if mtu is None:
         derived = 1420 + overhead4
         if derived > 1500:
             rep.warn(f"No MTU set. wg-quick/awg-quick derives 1420 on a 1500-byte link "
                      f"and ignores S4, so a full-size packet becomes {derived} bytes over "
-                     f"IPv4 and fragments even on a clean path. Set MTU explicitly "
-                     f"(1280 is safe everywhere)")
+                     f"IPv4 and fragments even on a clean path. {mtu_advice}")
         else:
             rep.warn(f"No MTU set. wg-quick/awg-quick derives 1420; with S4={s4} that is "
                      f"{derived} bytes over IPv4, which fits a 1500-byte path — but any "
                      f"client on a smaller one (PPPoE 1492, LTE ~1400, DS-Lite 1280) will "
-                     f"fragment. Set MTU explicitly (1280 is safe everywhere)")
+                     f"fragment. {mtu_advice}")
     else:
         if mtu + overhead4 > 1500:
             rep.error(f"MTU {mtu} with S4={s4} makes a full-size packet "
@@ -227,8 +234,10 @@ def check(c, rep):
                      f"{1500 - overhead6} if the endpoint is IPv6")
         if mtu > 1280:
             rep.info(f"MTU {mtu} is above 1280. That is fine on a clean path, but "
-                     f"1280 is the value that survives PPPoE, LTE and IPv6 "
-                     f"transitions without fragmenting")
+                     f"its wire packets ({mtu + overhead4} B over IPv4) may not clear "
+                     f"PPPoE, LTE or DS-Lite. 1280 clears ordinary paths; a path that "
+                     f"is itself ~1280 needs path - {overhead4} (IPv4) / "
+                     f"path - {overhead6} (IPv6)")
     if s4 > 20:
         rep.warn(f"S4 = {s4} is large. Overhead is 60+S4 per packet, so anything "
                  f"above 20 breaks the default 1420 MTU on a 1500-byte path")

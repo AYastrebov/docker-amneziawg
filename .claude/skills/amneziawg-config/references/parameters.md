@@ -46,6 +46,16 @@ Random bytes prepended to each message type so the fixed WireGuard packet sizes 
 headroom. Keep it at **20 or below** so a full-size packet still fits a 1500-byte path at the
 default 1420 tunnel MTU.
 
+The maxima above are **documented conventions, not runtime checks**: the Go implementation
+parses `s1`-`s4` as bare 16-bit integers with no range validation (`device/uapi.go`), and the
+kernel module only enforces the `≥ 12` header-protection floor (`netlink.c`). The S1/S2 caps are
+payload-budget arithmetic against 1280 (`1132 = 1280 − 148`, `1188 = 1280 − 92`) — note that is
+UDP *payload*, not the wire: a handshake at the cap is 1308 bytes on the wire over IPv4 and 1328
+over IPv6, so "crosses any path unfragmented" would require the lower `1280 − 28 − 148 = 1104` /
+`1280 − 48 − 148 = 1084` (S1) and `1160`/`1140` (S2). Staying inside them is
+still right — other clients may validate, and exceeding them breaks handshakes on narrow paths —
+but do not expect the endpoint to reject an out-of-range value for you.
+
 Three constraints govern the rest:
 
 - **`S1 + 56 ≠ S2`.** Plain WireGuard's initiation and response differ by 56 bytes. If
@@ -170,8 +180,12 @@ WireGuard but not for `S4`. Guidance:
 | Clean IPv4 path, known `S4` | `1500 − 60 − S4` |
 | IPv6 endpoint | `1500 − 80 − S4` |
 
-1280 is the IPv6 minimum link MTU, so every path must carry it without fragmenting. Below 1280
-only adds overhead.
+1280 clears every ordinary path — its wire packets are `1340 + S4` bytes over an IPv4 endpoint
+(`1360 + S4` over IPv6), under PPPoE's 1492 and typical LTE. Note the IPv6 1280-byte floor
+guarantees the packet **on the wire**, not the tunnel MTU: a path that is itself ~1280 (DS-Lite,
+tunnel-in-tunnel) needs `path − 60 − S4` for an IPv4 endpoint (1208 at `S4 = 12`) or
+`path − 80 − S4` for IPv6 (1188), or full-size packets still fragment — the IPv4 case verified by
+capture on exactly such a path. Below that, lower values only add overhead.
 
 ## Version detection
 

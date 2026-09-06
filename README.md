@@ -329,18 +329,21 @@ A UDP datagram larger than the path MTU is not rejected; the kernel fragments it
 
 The client side has the same problem in the other direction, and it usually has a *smaller* path MTU than the server: PPPoE (1492), LTE/5G (often 1400 or less, and iOS enforces path MTU strictly), IPv6-over-IPv4 transitions, corporate Wi-Fi. `awg-quick` on the server has no way of knowing any of this.
 
-1280 is the IPv6 minimum link MTU, which every IPv6 path is required to carry unfragmented, and it leaves 220 bytes of headroom on a 1500-byte IPv4 path — enough for `S4`, UDP, IP and a few hops of extra encapsulation. That is why it is the value people converge on, and why Amnezia's own installers and the 3.1 upgrade guides set it by default.
+1280 leaves 220 bytes of headroom on a 1500-byte IPv4 path — enough for `S4`, UDP, IP and a few hops of extra encapsulation — and its wire packets (`1280 + 60 + S4`) clear PPPoE (1492), LTE (~1400) and every ordinary path. That is why it is the value people converge on, and why Amnezia's own installers and the 3.1 upgrade guides set it by default.
+
+Be precise about what the "IPv6 minimum" argument guarantees, though: the 1280-byte floor applies to the packet **on the wire**, and a tunnel MTU of 1280 produces wire packets of `1340 + S4` bytes over an IPv4 endpoint and `1360 + S4` over an IPv6 one. On a path whose own MTU really is 1280 — DS-Lite, some LTE and tunnel-in-tunnel setups — those still fragment. The truly-safe-everywhere tunnel MTU is `1280 − 60 − S4` for an IPv4 endpoint (1208 at `S4 = 12`) or `1280 − 80 − S4` for IPv6 (1188), which keeps the outer packet at or under 1280. We verified the IPv4 case on such a path: at tunnel MTU 1208, 118,559 of 118,565 full-size datagrams measured exactly 1280 on the wire (the remainder were the handshake-burst outliers documented in [docs/awg-performance.md](docs/awg-performance.md)), and tunnel MTU 1280 would have fragmented every one of them. Measure your path (`ping -M do` binary search) rather than assuming; use 1280 when the path is normal or unknown-but-probably-normal, and `path − 60 − S4` (IPv4) / `path − 80 − S4` (IPv6) when you know the path is constrained.
 
 ### Which value to pick
 
 | Situation | Tunnel MTU | Why |
 |-----------|-----------:|-----|
-| Mobile clients, PPPoE, unknown paths, anything that "works but is slow" | **1280** | Safe on every path; the cost is a ~10% higher header-to-payload ratio, which is nothing next to fragmentation loss |
+| Mobile clients, PPPoE, unknown paths, anything that "works but is slow" | **1280** | Clears every ordinary path (needs path MTU ≥ `1340 + S4` on the wire for an IPv4 endpoint, `1360 + S4` for IPv6); the cost is a ~10% higher header-to-payload ratio, which is nothing next to fragmentation loss |
+| Path that is itself constrained to ~1280 (DS-Lite, tunnel-in-tunnel, some LTE) | `path − 60 − S4` (IPv4) / `path − 80 − S4` (IPv6) | The outer packet must fit the *path*, not the IPv6 floor: at `S4 = 12` a 1280-byte path needs tunnel MTU **1208** (IPv4 endpoint) or **1188** (IPv6). Measure with a `ping -M do` binary search |
 | Wired clients on a clean 1500-byte path, IPv4 endpoint | 1400-1413 | `1500 − 20 − 8 − 32 − S4`. 1413 is the ceiling for the largest default `S4` (27), 1408 for the hard maximum (32); 1400 also survives one extra 8-byte encapsulation |
 | IPv6 endpoint on a 1500-byte path | 1380-1393 | `1500 − 40 − 8 − 32 − S4`: 1393 for `S4 = 27`, 1388 for `S4 = 32` |
 | You have set `AWG_S4` yourself | `path − 60 (IPv4) / 80 (IPv6) − S4` | Recompute when you change `S4` |
 
-Do not go above the derived number expecting more speed: the tunnel MTU is a ceiling, and every byte above the path limit is paid back as fragmentation. Going below 1280 buys nothing except more per-packet overhead.
+Do not go above the derived number expecting more speed: the tunnel MTU is a ceiling, and every byte above the path limit is paid back as fragmentation. Going lower than you need only adds per-packet overhead: on a normal path there is no reason to drop under 1280, and on a constrained path no reason to drop under that path's own derived value (1208 IPv4 / 1188 IPv6 on a true 1280-byte path at `S4 = 12`). The number is derived, not magic.
 
 If you rely on `RandomTrailers` without `ContentPaddingAddition` (3.1 with `AWG_CONTENT_PADDING=0`), a lower MTU also helps in a second way: the trailer window tracks the largest datagram seen, so a smaller MTU caps how far small packets can be inflated, which matters on asymmetric links where the upload ACK stream is what limits download speed.
 

@@ -51,7 +51,9 @@ echo "path MTU = $((lo+28))"
 ```
 
 Then check the config fits: a full-size packet is `MTU + 60 + S4` on IPv4. If that exceeds the
-measured path MTU, lower the tunnel `MTU` (1280 is safe everywhere) or lower `S4`.
+measured path MTU, lower the tunnel `MTU` to `path − 60 − S4` (IPv4 endpoint) or
+`path − 80 − S4` (IPv6) — 1280 only when the measured path is ordinary (≥ ~1400); a path that is
+itself 1280 needs 1208/1188 — or lower `S4`.
 
 Paths are frequently smaller than 1500 — PPPoE is 1492, LTE is often ≤1400, and DS-Lite or other
 tunnelled access can land at 1280. The server usually has a clean 1500 and cannot know this, so

@@ -135,14 +135,27 @@ distributions plus the code, not an isolated experiment.
 above. Many mobile networks and CGNATs drop IP fragments outright, so the symptom is "pings fine,
 downloads crawl".
 
+The formula is verified to the byte, not inferred: `struct message_data` is 16 bytes (type 4 +
+key index 4 + counter 8) plus a 16-byte Poly1305 tag, and a wire capture of a tunnel running
+`MTU 1208, S4 12` showed 118,559 of 118,565 full-size datagrams at exactly
+`1208 + 12 + 32 = 1252` bytes of UDP payload — 1280 on the wire, the path MTU exactly. The
+`route MTU − 80 → 1420` default is `set_mtu_up()` in `awg-quick`, confirmed by bringing up a
+conf with no `MTU` line. The 6 remaining datagrams were oversized kernel-side handshake-burst
+packets above the trailer window cap (up to 1443 B, cause unidentified) — negligible for
+throughput since handshakes retry, but a reason not to state that trailers can *never* fragment.
+
 ## A note on where padding is capped
 
 Both `ContentPaddingAddition` and `RandomTrailers` cap their padding at `udp_window − packet_len`,
 where `udp_window` is a high-water mark over datagrams both sent *and* received (`send.c:243`,
 `receive.c:571`), starting at 500. It is **not** capped at the MTU, which is a common
 misconception. Because receiving a padded datagram raises the mark, content padding does grow
-full-size sends slightly — measured 1228 → 1229-1244 on the wire. Neither mechanism can cause
-fragmentation, but neither is quite as free as "only pads small packets" implies.
+full-size sends slightly — measured 1228 → 1229-1244 on the wire. For *transport* packets the cap
+holds and fragmentation stays impossible in practice (verified: 118,559 of 118,565 captured
+full-size datagrams at exactly the cap). It is not absolute, though: the handshake-burst
+outliers above were observed over the cap, so treat "cannot fragment" as a transport-path
+property rather than a guarantee about every packet the tunnel emits. Neither mechanism is
+quite as free as "only pads small packets" implies either.
 
 ## Recommended shape
 

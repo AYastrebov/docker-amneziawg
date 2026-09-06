@@ -2,7 +2,7 @@
 
 How each obfuscation parameter costs throughput, why, and which values to pick. Everything here is traced to upstream source and confirmed by measurement over a real internet path.
 
-Short version: **`RandomTrailers` combined with unequal `S1`-`S4` costs 98% of upload throughput.** The container generates exactly that combination under `AWG_VERSION=3.1`. See [Recommended parameters](#recommended-parameters).
+Short version: **`RandomTrailers` combined with unequal `S1`-`S4` costs 98% of upload throughput.** Container versions before the generator fix produced exactly that combination under `AWG_VERSION=3.1`; current versions draw one shared `S` value, but configs and saved `awg_params` from older versions still carry the broken shape. See [Recommended parameters](#recommended-parameters).
 
 ## Which parameters cost anything
 
@@ -42,7 +42,7 @@ random_trailers ? skb->len >= expected_len : skb->len == expected_len
 
 The receiver then tries init, response, cookie and transport in order. For each it reads a 4-byte type field at that type's own padding offset (`S1`, `S2`, `S3`, `S4`) and tests it against the matching `H` range.
 
-Once `>=` always passes, the type check is the only thing left separating the branches. And because the container draws `S1`-`S4` independently, they differ — so the init/response/cookie branches read the type field at the **wrong offset** and get garbage. Garbage lands inside a 50,000,000-wide `H` range with probability 50e6 / 2³² = 1.16% per branch, three branches, so:
+Once `>=` always passes, the type check is the only thing left separating the branches. And because the container's generator drew `S1`-`S4` independently at the time, they differed — so the init/response/cookie branches read the type field at the **wrong offset** and get garbage. Garbage lands inside a 50,000,000-wide `H` range with probability 50e6 / 2³² = 1.16% per branch, three branches, so:
 
 **≈3.49% of data packets are misclassified as handshake messages and dropped.**
 
@@ -74,7 +74,7 @@ Path: 22ms RTT, client path MTU 1280, tunnel MTU 1180. Without the tunnel the li
 | `HeaderProtectionKey` + `S=12`, no CPA/RT | 99.7 | 131.6 | 182 |
 | ↑ plus `RandomTrailers` | 99.7 | 125.3 | 537 |
 | ↑ plus `ContentPaddingAddition 1-16` | 99.7 | 102.4 | 186 |
-| **container `AWG_VERSION=3.1` default** | **1.7** | 115.0 | 258 |
+| **pre-fix container `AWG_VERSION=3.1` default** | **1.7** | 115.0 | 258 |
 | ↑ at `awg-quick`'s default MTU 1420 | **0.5** | 75.5 | 263 |
 
 The small-packet column is measured *after* a bulk transfer, so the trailer window has grown to full MTU — which is the realistic case for mixed traffic.
@@ -114,6 +114,23 @@ The 22% figure is measured directly and reproduced. The GRO attribution is infer
 ## MTU
 
 Per-packet overhead is `20 (IPv4) + 8 (UDP) + 32 (AWG header + tag) + S4` = **`60 + S4`**.
+
+The 32 is structural, not folklore: `struct message_data` is a 4-byte type + 4-byte
+key index + 8-byte counter = 16, and `noise_encrypted_len` adds a 16-byte
+Poly1305 tag (`messages.h:25,106-114`). Verified on the wire: with tunnel MTU 1208
+and `S4 = 12`, a capture of a bidirectional bulk transfer showed **118,559 of
+118,565 full-size datagrams at exactly 1252 bytes of UDP payload** —
+`1208 + 12 + 16 + 16` — which with 28 bytes of IPv4+UDP headers lands on the 1280-byte
+path MTU to the byte. The `MTU − 80` default (1420 on a 1500 link) is
+`set_mtu_up()` in `awg-quick`, confirmed by bringing up a conf with no `MTU` line.
+
+The remaining 6 datagrams are an open anomaly: server-side kernel-module packets
+of 1264-1443 bytes payload, emitted in bursts that coincide with
+handshake/rekey attempts, exceeding the `udp_window` cap that should bound every
+trailer. They grow with session age and would fragment on narrow paths. At
+~0.005% of packets the throughput impact is nil, and handshakes retry — but it
+means "trailers can never fragment" is not strictly true for kernel-side
+handshake packets, and the cause is not yet identified.
 
 `awg-quick` writes `route MTU − 80` = 1420 and knows nothing about `S4`, so on a 1500-byte IPv4 path:
 
