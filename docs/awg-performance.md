@@ -117,7 +117,7 @@ Per-packet overhead is `20 (IPv4) + 8 (UDP) + 32 (AWG header + tag) + S4` = **`6
 
 The 32 is structural, not folklore: `struct message_data` is a 4-byte type + 4-byte
 key index + 8-byte counter = 16, and `noise_encrypted_len` adds a 16-byte
-Poly1305 tag (`messages.h:106-114,25`). Verified on the wire: with tunnel MTU 1208
+Poly1305 tag (`messages.h:25,106-114`). Verified on the wire: with tunnel MTU 1208
 and `S4 = 12`, a capture of a bidirectional bulk transfer showed **118,559 of
 118,565 full-size datagrams at exactly 1252 bytes of UDP payload** —
 `1208 + 12 + 16 + 16` — which with 28 bytes of IP+UDP lands on the 1280-byte

@@ -337,7 +337,7 @@ Be precise about what the "IPv6 minimum" argument guarantees, though: the 1280-b
 
 | Situation | Tunnel MTU | Why |
 |-----------|-----------:|-----|
-| Mobile clients, PPPoE, unknown paths, anything that "works but is slow" | **1280** | Clears every ordinary path (needs path MTU ≥ `1340 + S4` on the wire); the cost is a ~10% higher header-to-payload ratio, which is nothing next to fragmentation loss |
+| Mobile clients, PPPoE, unknown paths, anything that "works but is slow" | **1280** | Clears every ordinary path (needs path MTU ≥ `1340 + S4` on the wire for an IPv4 endpoint, `1360 + S4` for IPv6); the cost is a ~10% higher header-to-payload ratio, which is nothing next to fragmentation loss |
 | Path that is itself constrained to ~1280 (DS-Lite, tunnel-in-tunnel, some LTE) | `path − 60 − S4` (IPv4) / `path − 80 − S4` (IPv6) | The outer packet must fit the *path*, not the IPv6 floor: at `S4 = 12` a 1280-byte path needs tunnel MTU **1208** (IPv4 endpoint) or **1188** (IPv6). Measure with a `ping -M do` binary search |
 | Wired clients on a clean 1500-byte path, IPv4 endpoint | 1400-1413 | `1500 − 20 − 8 − 32 − S4`. 1413 is the ceiling for the largest default `S4` (27), 1408 for the hard maximum (32); 1400 also survives one extra 8-byte encapsulation |
 | IPv6 endpoint on a 1500-byte path | 1380-1393 | `1500 − 40 − 8 − 32 − S4`: 1393 for `S4 = 27`, 1388 for `S4 = 32` |
