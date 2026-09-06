@@ -49,8 +49,10 @@ default 1420 tunnel MTU.
 The maxima above are **documented conventions, not runtime checks**: the Go implementation
 parses `s1`-`s4` as bare 16-bit integers with no range validation (`device/uapi.go`), and the
 kernel module only enforces the `≥ 12` header-protection floor (`netlink.c`). The S1/S2 caps are
-arithmetic against the 1280-byte IPv6 minimum MTU (`1132 = 1280 − 148`, `1188 = 1280 − 92` — the
-largest prefix that still lets a handshake cross any path unfragmented). Staying inside them is
+payload-budget arithmetic against 1280 (`1132 = 1280 − 148`, `1188 = 1280 − 92`) — note that is
+UDP *payload*, not the wire: a handshake at the cap is 1308 bytes on the wire over IPv4 and 1328
+over IPv6, so "crosses any path unfragmented" would require the lower `1280 − 28 − 148 = 1104` /
+`1280 − 48 − 148 = 1084` (S1) and `1160`/`1140` (S2). Staying inside them is
 still right — other clients may validate, and exceeding them breaks handshakes on narrow paths —
 but do not expect the endpoint to reject an out-of-range value for you.
 
