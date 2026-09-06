@@ -129,9 +129,12 @@ packet is `1420 + 60 + S4` on IPv4 and fragments past 1500 as soon as `S4 > 20`.
 dropped or rate-limited by many mobile networks, CGNATs and DPI boxes, which shows up as
 "connects fine, small things work, downloads crawl".
 
-Keep `S4 ≤ 20`, and write an explicit `MTU`. **1280 is the safe default** — it is the IPv6 minimum
-link MTU, so every path carries it unfragmented. On a known-clean IPv4 path you can use
-`1500 − 60 − S4`. Going below 1280 buys nothing but overhead.
+Keep `S4 ≤ 20`, and write an explicit `MTU`. **1280 is the right default** — its wire packets
+(`1340 + S4`) clear PPPoE, LTE and every ordinary path. On a known-clean IPv4 path you can use
+`1500 − 60 − S4`. But the IPv6 1280-byte floor guarantees the packet *on the wire*, not the tunnel
+MTU: if the path is itself ~1280 (DS-Lite, tunnel-in-tunnel), use `path − 60 − S4` — 1208 at
+`S4 = 12` — or full-size packets still fragment. When a user reports slowness despite MTU 1280,
+measure the path (`ping -M do` binary search) before concluding MTU is not the problem.
 
 ## Which values must match
 
