@@ -207,10 +207,10 @@ def check(c, rep):
     # The MTU advice deliberately avoids "1280 is safe everywhere": tunnel MTU
     # 1280 emits (1340+S4)-byte wire packets, which still fragment on a path
     # that is itself ~1280 (DS-Lite, tunnel-in-tunnel). The safe rule is
-    # path − 60 − S4 (IPv4) / path − 80 − S4 (IPv6); 1280 is only the value
+    # path - 60 - S4 (IPv4) / path - 80 - S4 (IPv6); 1280 is only the value
     # that clears *ordinary* paths.
     mtu_advice = (f"Set MTU explicitly: 1280 clears ordinary paths; a constrained "
-                  f"path needs path − {overhead4} (IPv4) / path − {overhead6} (IPv6) "
+                  f"path needs path - {overhead4} (IPv4) / path - {overhead6} (IPv6) "
                   f"— e.g. a true 1280-byte path needs {1280 - overhead4}, not 1280")
     if mtu is None:
         derived = 1420 + overhead4
@@ -236,8 +236,8 @@ def check(c, rep):
             rep.info(f"MTU {mtu} is above 1280. That is fine on a clean path, but "
                      f"its wire packets ({mtu + overhead4} B over IPv4) may not clear "
                      f"PPPoE, LTE or DS-Lite. 1280 clears ordinary paths; a path that "
-                     f"is itself ~1280 needs path − {overhead4} (IPv4) / "
-                     f"path − {overhead6} (IPv6)")
+                     f"is itself ~1280 needs path - {overhead4} (IPv4) / "
+                     f"path - {overhead6} (IPv6)")
     if s4 > 20:
         rep.warn(f"S4 = {s4} is large. Overhead is 60+S4 per packet, so anything "
                  f"above 20 breaks the default 1420 MTU on a 1500-byte path")
