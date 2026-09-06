@@ -104,6 +104,8 @@ The container works out of the box without a kernel module: it falls back to the
 
 Keep the module and the image on the same feature generation. An older module still works with a newer image, but the kernel datapath only applies the options that module knows about.
 
+If you run the kernel datapath with `RandomTrailers`, use module **v3.1.20260906 or newer**: earlier 3.1 modules appended random trailers to I1-I5 signature packets and junk packets too, producing occasional oversized handshake-burst datagrams that fragment on narrow paths (see [docs/awg-performance.md](docs/awg-performance.md)). The bundled userspace `amneziawg-go` never had this bug.
+
 > [!NOTE]
 > `SYS_MODULE` is not required for the kernel datapath. The container never calls `modprobe`, it only checks whether the module is already loaded. See [Parameters](#parameters) for the one case where `SYS_MODULE` still helps.
 
