@@ -263,6 +263,8 @@ AWG 2.0 sends signature packets before the handshake to make VPN traffic look li
 | `<rc N>` | N random chars (a-zA-Z) | `<rc 16>` |
 | `<t>` | 32-bit Unix timestamp | |
 
+Current AmneziaWG puts no size limit on a random tag, and the default I1 uses a single `<r 1178>`. Some third-party parsers still enforce an older 1000-byte-per-tag rule (observed: Keenetic rejects the default with `invalid I1 value`); for those, write the run as `<r 1000><r 178>` — identical on the wire, so peers on either form interoperate. See [CONTEXT.md](CONTEXT.md).
+
 [AmneziaWG Architect](https://architect.vai-rice.space/) generates signature strings for QUIC, DNS, DTLS, SIP, HTTP/3 and others.
 
 ## Custom SERVERPORT
