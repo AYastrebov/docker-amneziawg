@@ -166,8 +166,10 @@ third-party parsers written to the published text may enforce it. Observed: Keen
 rejects a peer conf carrying this container's default I1 with `invalid I1 value`, while a
 KeeneticOS 5.1 user reports `…<r 1000><r 184>` working (forum.keenetic.ru topic 27738). The exact
 threshold is not confirmed, and `invalid I1 value` is not size-specific (forum.keenetic.com topic
-26532 shows it from an unrelated cause). For such a parser, split the run into consecutive tags —
-`<r 1000><r 178>` — which is byte-identical on the wire: both stacks fill one buffer tag by tag
+26532 shows it from an unrelated cause). For such a parser, split only the oversized tag into consecutive tags of the same kind and
+leave the rest of the value untouched — the default's `<r 1178>` becomes `<r 1000><r 178>`, so the
+full value reads `<b 0xc3><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x449e><r 4><r 1000><r 178>`. That is
+byte-identical on the wire: both stacks fill one buffer tag by tag
 (`junk.c` `jp_spec_setup`, `amneziawg-go` `obfChain`), and I1-I5 are send-only, so peers holding
 either spelling interoperate. The container deliberately keeps the single-tag form.
 
