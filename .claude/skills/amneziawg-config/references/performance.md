@@ -141,11 +141,13 @@ key index 4 + counter 8) plus a 16-byte Poly1305 tag, and a wire capture of a tu
 `1208 + 12 + 32 = 1252` bytes of UDP payload — 1280 on the wire, the path MTU exactly. The
 `route MTU − 80 → 1420` default is `set_mtu_up()` in `awg-quick`, confirmed by bringing up a
 conf with no `MTU` line. The 6 remaining datagrams were oversized kernel-side handshake-burst
-packets (up to 1443 B) — since root-caused upstream: kernel modules before v3.1.20260906
-appended a random trailer to every raw buffer sent, including I1-I5 signature and junk packets
-(fixed in `4569c4c6`; a burst is 1×I1 + Jc junk, matching the observed count). Negligible for
-throughput since handshakes retry, but a reason to run module ≥ v3.1.20260906 and not to state
-that trailers can *never* fragment on older ones.
+packets (up to 1443 B) — since root-caused upstream: kernel modules built before `4569c4c6`
+(2026-09-06) appended a random trailer to every raw buffer sent, including I1-I5 signature and
+junk packets (a burst is 1×I1 + Jc junk, matching the observed count). Negligible for
+throughput since handshakes retry, but a reason to run a module built from `4569c4c6` or newer
+and not to state that trailers can *never* fragment on older ones. The fix did not bump
+`version.h`: a patched module still reports `3.1.20260812`, so check `dpkg -l amneziawg-dkms`
+for `…+4569c4c…` or the `bool trailer` parameter in `socket.c` instead of the version string.
 
 ## A note on where padding is capped
 
