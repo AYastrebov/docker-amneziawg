@@ -126,18 +126,49 @@ path MTU to the byte. The `MTU − 80` default (1420 on a 1500 link) is
 
 The remaining 6 datagrams — server-side packets of 1264-1443 bytes payload in
 bursts coinciding with handshake attempts — were an open anomaly when first
-captured, and have since been root-caused upstream: kernel modules before
-**v3.1.20260906** appended a random trailer to *every* raw buffer sent to a
-peer, because `wg_socket_send_buffer_to_peer()` applied the trailer
+captured, and have since been root-caused upstream: kernel modules built before
+**`4569c4c6`** (2026-09-06) appended a random trailer to *every* raw buffer sent
+to a peer, because `wg_socket_send_buffer_to_peer()` applied the trailer
 unconditionally — including to I1-I5 signature packets and dummy junk packets
-(fixed in `4569c4c6`, "do not append random trailers to I1-I5 and dummy junk
+(the commit is titled "do not append random trailers to I1-I5 and dummy junk
 packets"). A handshake burst sends exactly one I1 plus `Jc` junk packets, which
 matches the observed 6-7 outliers per burst with `Jc = 6`. The sizes exceeding
 the `udp_window` cap we computed from current source reflect the measured
-module (v3.1.20260812) predating the current cap helpers as well. Upgrade the
-host module to **v3.1.20260906 or newer** to eliminate the oversized packets;
-on older modules they cost at most rekey latency on narrow paths, since
-handshakes retry.
+module predating the current cap helpers as well. Run a module built from
+`4569c4c6` or newer to eliminate the oversized packets; on older ones they cost
+at most rekey latency on narrow paths, since handshakes retry.
+
+### Checking whether your module has the fix
+
+**`/sys/module/amneziawg/version` cannot answer this.** Upstream did not bump
+`version.h` in the fix commit, so a patched module still reports
+`3.1.20260812` — the same string as the module this anomaly was captured on.
+Anything that tests the date component of that string will misreport. Check the
+package build or the source instead:
+
+```bash
+# Debian/Ubuntu: the PPA version encodes the build date and the commit
+dpkg -l amneziawg-dkms
+# ii  amneziawg-dkms  1.0.0-0~202609061402+4569c4c~ubuntu20.04.1   <- has the fix
+
+# Or read the source: the trailing bool parameter is the fix
+grep -n 'bool trailer' /usr/src/amneziawg-*/socket.c
+grep -n 'wg_socket_send_buffer_to_peer' /usr/src/amneziawg-*/send.c
+# the I1-I5 and junk-packet call sites pass `false`
+```
+
+DKMS builds per kernel, so also confirm the *loaded* module is the one that was
+built rather than a stale image from before the upgrade — `srcversion`
+discriminates where `version` does not:
+
+```bash
+cat /sys/module/amneziawg/srcversion
+modinfo amneziawg | grep -E '^(filename|srcversion)'   # must match
+```
+
+This does not affect the container's `check_awg31_kernel_support()`: that only
+compares the `3.1` major/minor to decide whether the module understands the 3.1
+switches at all, and upstream does maintain those two components.
 
 `awg-quick` writes `route MTU − 80` = 1420 and knows nothing about `S4`, so on a 1500-byte IPv4 path:
 
