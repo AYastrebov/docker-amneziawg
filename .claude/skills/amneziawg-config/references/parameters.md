@@ -205,10 +205,34 @@ For writing custom `I1`-`I5` disguises:
 | Tag | Meaning |
 |---|---|
 | `<b 0xHEX>` | Literal bytes, e.g. `<b 0x170303>` |
-| `<r N>` | N cryptographically random bytes (N ≤ 1000) |
+| `<r N>` | N cryptographically random bytes — no size limit in current AmneziaWG (see note below) |
 | `<rc N>` | N random ASCII letters `[A-Za-z]` |
 | `<rd N>` | N random decimal digits `[0-9]` |
 | `<t>` | 32-bit Unix timestamp, network byte order |
+
+#### `<r N>` size
+
+There is no per-tag size limit in current AmneziaWG. The 1000-byte cap that older versions of this
+document stated existed in exactly one implementation and is gone:
+
+- `amneziawg-go` ≤ v0.2.15 rejected `<r>`/`<rc>`/`<rd>` above 1000 in `newRandomGeneratorBase`
+  (`device/awg/tag_generator.go:73`, `if size > 1000`). Removed 2025-12-01 by `0361c54`
+  ("fix: refactor processing of junk packets", PR #103); every release since v0.2.16, including
+  the pinned v3.1.20260828, parses the size with a bare `strconv.Atoi` (`device/obf_rand.go:8-17`).
+- `amneziawg-tools` (`config.c:533`, `strdup`) and the kernel module (`junk.c:108-124`,
+  `kstrtoint`; `netlink.c:58`, unbounded `NLA_NUL_STRING`) never had one.
+
+docs.amnezia.org still lists `<r length>` as "length ≤ 1000" (and `<rc>`/`<rd>` "N ≤ 1000"), so
+third-party parsers written to the published text may enforce it. Observed: Keenetic NDMS ASC
+rejects a peer conf carrying this container's default I1 with `invalid I1 value`, while a
+KeeneticOS 5.1 user reports `…<r 1000><r 184>` working (forum.keenetic.ru topic 27738). The exact
+threshold is not confirmed, and `invalid I1 value` is not size-specific (forum.keenetic.com topic
+26532 shows it from an unrelated cause). For such a parser, split only the oversized tag into consecutive tags of the same kind and
+leave the rest of the value untouched — the default's `<r 1178>` becomes `<r 1000><r 178>`, so the
+full value reads `<b 0xc3><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x449e><r 4><r 1000><r 178>`. That is
+byte-identical on the wire: both stacks fill one buffer tag by tag
+(`junk.c` `jp_spec_setup`, `amneziawg-go` `obfChain`), and I1-I5 are send-only, so peers holding
+either spelling interoperate. The container deliberately keeps the single-tag form.
 
 Example DNS query disguise:
 

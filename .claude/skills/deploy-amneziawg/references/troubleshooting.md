@@ -152,6 +152,10 @@ Expected. Any change to S1-S4, H1-H4, or I1-I5 invalidates every existing peer c
 1. Revert the change, or
 2. Redistribute every peer config (`docker exec amneziawg /app/show-peer <name>` and re-import on each device).
 
+## Keenetic rejects the peer conf with `invalid I1 value`
+
+Observed with this container's default I1, whose last tag is `<r 1178>`. Current AmneziaWG has no per-tag size limit (the 1000-byte check existed only in amneziawg-go ≤ v0.2.15, removed in PR #103), but docs.amnezia.org still lists `<r>` as "length ≤ 1000" and Keenetic's native stack appears to enforce something like it — the exact threshold is unconfirmed, and the same error string also arises from unrelated causes. Workaround on the router side: in the conf you import, replace only the trailing `<r 1178>` with `<r 1000><r 178>`, keeping everything before it unchanged — the default I1 then reads `<b 0xc3><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x449e><r 4><r 1000><r 178>`. That is byte-identical on the wire (adjacent random tags form one contiguous run, and I1 is send-only), so it is **not** an I1 change — the server and the other peers keep their configs, nothing is redistributed. Do not change `AWG_I1` on the server for this.
+
 ## Container started fine but the user's phone won't connect from cellular
 
 Likely the mobile carrier blocks UDP on the chosen port. Try:
