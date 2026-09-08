@@ -332,10 +332,17 @@ jobs:
             docker run -d --name awgci --cap-add NET_ADMIN \
               -e PEERS=2 -e SERVERURL=ci.example.com -e INTERNAL_SUBNET=10.13.13.0 \
               "$@" test-image >/dev/null
+            # Wait on the log, not on /config/peer2/peer2.png: the volume-reusing
+            # scenarios below already have that file from the previous run, so it
+            # is true before this container has done anything. The container is
+            # recreated on every call, so its log only ever holds this run, and
+            # "Configuration complete" is the last line of init-amneziawg-confs.
             for _ in $(seq 1 45); do
-              docker exec awgci test -f /config/peer2/peer2.png 2>/dev/null && break
+              docker logs awgci 2>&1 | grep -q 'Configuration complete' && break
               sleep 2
             done
+            docker logs awgci 2>&1 | grep -q 'Configuration complete' \
+              || { echo "IPv6: container never finished config generation"; docker logs awgci; exit 1; }
             docker exec awgci test -f /config/peer2/peer2.png \
               || { echo "IPv6: peer confs were never generated"; docker logs awgci; exit 1; }
           }
@@ -408,8 +415,12 @@ jobs:
             sed -i "s|^PostUp = .*|PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP|" /config/templates/server.conf
             sed -i "s|^PostDown = .*|PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j DROP; ip6tables -D FORWARD -o %i -j DROP|" /config/templates/server.conf
           '
-          start_awgci -v awgci-cfg:/config
+          # A template edit is not watched by the container's change detection, so
+          # wg0.conf would not be regenerated and the greps below would read
+          # scenario 6's output. IP6_SUBNET is watched: varying it forces a rewrite.
+          start_awgci -v awgci-cfg:/config -e IP6_SUBNET=fd12:3456:789a::/64
           docker logs awgci 2>&1 | grep -q 'migrated PostUp line' || fail "DROP migration: PostUp not migrated"
+          docker logs awgci 2>&1 | grep -q 'regenerating 1 server' || fail "DROP migration: confs were not regenerated"
           if docker exec awgci grep -q -- '-j DROP' /config/wg_confs/wg0.conf; then fail "DROP migration: DROP rules survived"; fi
           docker exec awgci grep -q 'icmp6-adm-prohibited' /config/wg_confs/wg0.conf || fail "DROP migration: REJECT missing"
           echo "  #36 DROP templates: migrated"
@@ -417,7 +428,10 @@ jobs:
           # 7. customised PostUp is warned about, not fatal
           docker rm -f awgci >/dev/null 2>&1 || true
           docker run --rm -v awgci-cfg:/config test-image sh -c 'sed -i "s|^PostUp = .*|PostUp = iptables -A FORWARD -i %i -j ACCEPT; /config/hook.sh|" /config/templates/server.conf'
+          # Same reason as 6b: the template edit alone would not regenerate
+          # wg0.conf. Back to the derived prefix, which differs from 6b's.
           start_awgci -v awgci-cfg:/config
+          docker logs awgci 2>&1 | grep -q 'regenerating 1 server' || fail "customised PostUp: confs were not regenerated"
           docker logs awgci 2>&1 | grep -q 'PostUp line is customised' || fail "customised PostUp not warned"
           docker exec awgci grep -q '^PostUp = iptables -A FORWARD -i %i -j ACCEPT; /config/hook.sh$' /config/wg_confs/wg0.conf || fail "customised PostUp altered"
           echo "  customised template: warned, untouched"

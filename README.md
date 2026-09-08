@@ -259,19 +259,21 @@ To turn a switch back off, set it to `off` rather than removing it — removing 
 Every peer gets an IPv6 address inside the tunnel by default (a ULA derived from
 `INTERNAL_SUBNET`), so dual-stack clients route **all** their IPv6 into the
 tunnel instead of leaking it around the VPN. What happens to that traffic at
-the server depends on whether the container has a working IPv6 stack: the
-IPv6 stack enabled, a default route, and `net.ipv6.conf.all.forwarding=1` all
-present:
+the server depends on three conditions: the IPv6 stack enabled, a default
+route, and `net.ipv6.conf.all.forwarding=1`:
 
-| container has IPv6 (stack + route + forwarding) | `IP6_EXIT=auto` resolves to | peers experience |
+| container state | `IP6_EXIT=auto` resolves to | peers experience |
 |---|---|---|
-| no (default Docker network, or forwarding sysctl missing) | `off` — traffic is rejected with ICMPv6, and the built-in DNS returns no AAAA records | IPv4-only, no leak, no hangs |
-| yes | `nat` — masqueraded out of the container like IPv4 | full IPv6 |
+| no IPv6 stack (host booted with `ipv6.disable=1`) | `off`, and no IPv6 address is handed out at all — same output as `IP6_SUBNET=off` | IPv4-only |
+| stack, but no route / no forwarding / no `ip6table_nat` (default Docker network) | `off` — traffic is rejected with ICMPv6, and the built-in DNS returns no AAAA records | IPv4-only, no leak, no hangs |
+| all three, ULA prefix (the default) | `nat` — masqueraded out of the container like IPv4 | full IPv6 |
+| all three, global prefix set via `IP6_SUBNET` | `routed` — forwarded unmasqueraded; that `/64` must be routed to this host | full IPv6 |
 
 ### Enable IPv6 egress
 
-Three lines in `docker-compose.yml`; nothing on the Docker daemon, nothing on
-other containers (Docker ≥ 27 allocates a ULA and does NAT66 itself):
+Two lines in `docker-compose.yml`; nothing on the Docker daemon, nothing on
+other containers (Docker ≥ 27 allocates a ULA and does NAT66 itself). Both
+ship commented out in this repo's `docker-compose.yml` — uncomment them:
 
 ```yaml
 services:
@@ -284,7 +286,9 @@ networks:
 ```
 
 Then `docker compose up -d` and check the log for `IPv6 exit: nat`. Peer confs
-are unchanged by this; only the server's firewall rules are.
+are unchanged by this; only the server's firewall rules are. `enable_ipv6`
+needs Docker ≥ 27 — on older Docker `docker compose up` fails while creating
+the network, which is why the lines are shipped commented out.
 
 ### Options
 
@@ -293,9 +297,11 @@ are unchanged by this; only the server's firewall rules are.
   actually routed to the host.
 - `IP6_SUBNET=off` — no IPv6 addresses, no `ip6tables` rules, output identical
   to earlier releases. Use this if a client cannot parse an IPv6 `Address`.
-- `IP6_EXIT=nat|routed|off` — override auto-detection. Forcing `nat` on a host
-  without an IPv6 route or without the `ip6table_nat` kernel module makes
-  `PostUp` fail and the tunnel will not come up; the error is in the log.
+- `IP6_EXIT=nat|routed|off` — override auto-detection. A forced mode is used
+  verbatim: forcing `nat` on a host without an IPv6 route or without the
+  `ip6table_nat` kernel module makes `PostUp` fail and the tunnel will not
+  come up; the error is in the log. `auto` checks for both before it picks
+  `nat`, so it never puts you there.
 
 The outer endpoint (the UDP port clients connect to) stays IPv4. Docker
 publishes it on `[::]` too, so a hostname with an AAAA record also works, but
@@ -311,14 +317,29 @@ address, and that lives in the client's conf, not on the server.
 Templates in `/config/templates/` are migrated automatically (the old
 hard-coded `ip6tables` rules are replaced by `${IP6_POSTUP}` placeholders). If
 you customised `PostUp`/`PostDown`/`Address`, the log says which line was left
-alone; add the placeholder shown in `root/defaults/server.conf` yourself. A
-custom `/config/coredns/Corefile` needs
-`import /config/coredns/generated/*.conf` inside the server block for AAAA
-filtering; the log reminds you.
+alone; add the placeholder shown in `root/defaults/server.conf` yourself.
+
+**Every existing installation** needs one line added by hand to
+`/config/coredns/Corefile`. That file is only copied from the image's default
+when it does not exist, so an installation that has ever started keeps the
+Corefile it already has, and the new default's import line never reaches it.
+Add this inside the server block:
+
+```
+import /config/coredns/generated/*.conf
+```
+
+and restart. It is what activates AAAA suppression, so that peers using
+`PEERDNS=auto` never even try IPv6 while the exit is `off`. The startup log
+reminds you when the line is missing.
+
+Skipping it is not a leak: IPv6 is still rejected at the server's firewall.
+The only cost is latency — a client gets an AAAA record, tries IPv6, gets an
+ICMPv6 reject and falls back to IPv4, instead of never trying.
 
 ### Troubleshooting
 
-- **`ip6tables: ... No chain/target/match by that name` in the log and the tunnel does not start** — the host lacks an IPv6 netfilter module (`ip6table_nat` or `ip6table_filter`). With `IP6_EXIT=auto` this only happens when you forced a mode; otherwise set `IP6_SUBNET=off`.
+- **`ip6tables: ... No chain/target/match by that name` in the log and the tunnel does not start** — the host lacks an IPv6 netfilter module (`ip6table_nat` or `ip6table_filter`). `IP6_EXIT=auto` probes for a usable NAT table before it picks `nat` and falls back to `off` with the reason in the log, so with `auto` this can only happen when even the *filter* table is missing (the `off` mode's REJECT rules need it). A forced `IP6_EXIT=nat` or `routed` is honoured verbatim and will fail here — that is deliberate. Drop the forced mode, or set `IP6_SUBNET=off` to emit no `ip6tables` rules at all.
 - **IPv6 sites hang on peers** — the peer is not using the container's DNS (`PEERDNS` set to a public resolver) and the exit is `off`. Either enable IPv6 egress or set `PEERDNS=auto`.
 
 ## Custom protocol signatures (I1-I5)

@@ -846,6 +846,9 @@ Run this from the repo root to prove the heredoc expansion produces valid lines 
 ```bash
 bash -c '
 source root/app/ipv6-lib.sh
+# ip6_resolve_subnet consults ip6_stack_enabled, which reads /proc: override it
+# outside a Linux container or every block collapses to the IP6_SUBNET=off case.
+ip6_stack_enabled() { return 0; }
 INTERFACE=10.13.13; AWG_JC=4; AWG_JMIN=40; AWG_JMAX=70; AWG_S1=0; AWG_S2=0; AWG_S3=0; AWG_S4=0; AWG_H1=5; AWG_H2=6; AWG_H3=7; AWG_H4=8
 for exit in off nat; do
   IP6_EXIT=$exit; ip6_resolve_subnet >/dev/null; ip6_resolve_exit >/dev/null

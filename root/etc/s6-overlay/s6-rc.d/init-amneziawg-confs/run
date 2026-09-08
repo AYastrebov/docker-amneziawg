@@ -873,3 +873,6 @@ resolvconf -u
 # permissions
 lsiown -R abc:abc \
     /config
+
+# Last line of this oneshot: everything under /config is in its final state.
+echo "**** Configuration complete ****"
