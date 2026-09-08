@@ -1,6 +1,6 @@
 #!/bin/bash
 # shellcheck shell=bash
-# shellcheck disable=SC2034  # IP6_* globals are consumed by init-amneziawg-confs/run
+# shellcheck disable=SC2034,SC2016  # IP6_* globals are consumed by init-amneziawg-confs/run; SC2016: single quotes are intentional for literal pattern matching
 # IPv6 helpers for init-amneziawg-confs. Sourced, not executed.
 # Pure functions read only their arguments or the documented globals so the
 # file can be unit-tested outside the container (tests/ipv6-lib.test.sh).
@@ -135,4 +135,58 @@ ip6_resolve_exit() {
             fi
             ;;
     esac
+}
+
+# ---- template migration ------------------------------------------------
+# The exact lines shipped in root/defaults before IPv6 support, and their
+# replacements. User templates are matched line-for-line; a customised line
+# is left alone with a warning.
+IP6_OLD_SERVER_ADDRESS='Address = ${INTERFACE}.1'
+IP6_NEW_SERVER_ADDRESS='Address = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}'
+# Two PostUp/PostDown generations exist in the wild: the original ACCEPT+MASQUERADE
+# lines, and the DROP lines shipped by #36 (656d987). Both migrate to the placeholder.
+IP6_OLD_POSTUP_ACCEPT='PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE'
+IP6_OLD_POSTUP_DROP='PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP'
+IP6_NEW_POSTUP='PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE${IP6_POSTUP:+; ${IP6_POSTUP}}'
+IP6_OLD_POSTDOWN_ACCEPT='PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -D FORWARD -o %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o eth+ -j MASQUERADE'
+IP6_OLD_POSTDOWN_DROP='PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j DROP; ip6tables -D FORWARD -o %i -j DROP'
+IP6_NEW_POSTDOWN='PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}'
+IP6_OLD_PEER_ADDRESS='Address = ${CLIENT_IP}'
+IP6_NEW_PEER_ADDRESS='Address = ${CLIENT_IP}${CLIENT_IP6:+,${CLIENT_IP6}}'
+
+# <file> <new line> <marker> <label> <old line>...
+ip6_migrate_line() {
+    local file=$1 new=$2 marker=$3 label=$4 old line tmp
+    shift 4
+    [[ -f "${file}" ]] || return 0
+    if grep -Fq -- "${marker}" "${file}"; then
+        return 0
+    fi
+    for old in "$@"; do
+        if grep -Fxq -- "${old}" "${file}"; then
+            tmp=$(mktemp)
+            while IFS= read -r line || [[ -n "${line}" ]]; do
+                if [[ "${line}" == "${old}" ]]; then
+                    printf '%s\n' "${new}"
+                else
+                    printf '%s\n' "${line}"
+                fi
+            done < "${file}" > "${tmp}"
+            cat "${tmp}" > "${file}"
+            rm -f "${tmp}"
+            echo "**** ${file}: migrated ${label} line for IPv6 support ****"
+            return 0
+        fi
+    done
+    echo "**** ${file}: ${label} line is customised and has no ${marker} placeholder; IPv6 will not be applied to it. See README section \"IPv6\" ****"
+    return 0
+}
+
+# <server template> <peer template>
+ip6_migrate_templates() {
+    local server=$1 peer=$2
+    ip6_migrate_line "${server}" "${IP6_NEW_SERVER_ADDRESS}" '${SERVER_IP6'   'Address'  "${IP6_OLD_SERVER_ADDRESS}"
+    ip6_migrate_line "${server}" "${IP6_NEW_POSTUP}"         '${IP6_POSTUP'   'PostUp'   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}"
+    ip6_migrate_line "${server}" "${IP6_NEW_POSTDOWN}"       '${IP6_POSTDOWN' 'PostDown' "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"
+    ip6_migrate_line "${peer}"   "${IP6_NEW_PEER_ADDRESS}"   '${CLIENT_IP6'   'Address'  "${IP6_OLD_PEER_ADDRESS}"
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034  # IP6_SUBNET/IP6_EXIT/INTERFACE are read by the library under test
+# shellcheck disable=SC2034,SC2016  # IP6_SUBNET/IP6_EXIT/INTERFACE are read by the library under test; SC2016: single quotes are intentional for literal pattern matching
 # Unit tests for root/app/ipv6-lib.sh. Runs on any machine with bash >= 4.
 # Usage: bash tests/ipv6-lib.test.sh
 set -u
@@ -146,6 +146,82 @@ assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 0 1)" 'no IPv6 default r
 assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 0 1)" 'enable_ipv6: true' "off hint names the fix"
 assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 1 0)" 'forwarding' "off reason: forwarding"
 assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 1 1)" 'IPv6 exit: nat' "nat logged"
+
+# ---- template migration ------------------------------------------------
+TMPD=$(mktemp -d)
+trap 'rm -rf "$TMPD"' EXIT
+
+old_server() {  # exactly the template shipped before this feature
+    cat > "$1" <<'EOF'
+[Interface]
+Address = ${INTERFACE}.1
+ListenPort = 51820
+PrivateKey = $(cat /config/server/privatekey-server)
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -D FORWARD -o %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o eth+ -j MASQUERADE
+Jc = ${AWG_JC}
+EOF
+}
+old_peer() {
+    cat > "$1" <<'EOF'
+[Interface]
+Address = ${CLIENT_IP}
+PrivateKey = $(cat /config/${PEER_ID}/privatekey-${PEER_ID})
+DNS = ${PEERDNS}
+
+[Peer]
+AllowedIPs = ${ALLOWEDIPS}
+EOF
+}
+drop_server() {  # the template shipped by #36 (656d987): ip6tables DROP, no v6 NAT
+    cat > "$1" <<'EOF'
+[Interface]
+Address = ${INTERFACE}.1
+ListenPort = 51820
+PrivateKey = $(cat /config/server/privatekey-server)
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j DROP; ip6tables -D FORWARD -o %i -j DROP
+Jc = ${AWG_JC}
+EOF
+}
+
+old_server "$TMPD/server.conf"; old_peer "$TMPD/peer.conf"
+log=$(ip6_migrate_templates "$TMPD/server.conf" "$TMPD/peer.conf")
+assert_contains "$(cat "$TMPD/server.conf")" 'Address = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}' "server Address migrated"
+assert_contains "$(cat "$TMPD/server.conf")" 'MASQUERADE${IP6_POSTUP:+; ${IP6_POSTUP}}' "PostUp migrated"
+assert_contains "$(cat "$TMPD/server.conf")" 'MASQUERADE${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}' "PostDown migrated"
+assert_eq "0" "$(grep -c 'ip6tables' "$TMPD/server.conf")" "old ip6tables rules gone"
+assert_contains "$(cat "$TMPD/peer.conf")" 'Address = ${CLIENT_IP}${CLIENT_IP6:+,${CLIENT_IP6}}' "peer Address migrated"
+assert_eq "7" "$(wc -l < "$TMPD/server.conf" | tr -d ' ')" "server line count unchanged"
+assert_eq "7" "$(wc -l < "$TMPD/peer.conf" | tr -d ' ')" "peer line count unchanged"
+assert_contains "$log" 'migrated PostUp' "migration logged"
+
+# #36 DROP variant migrates the same way
+drop_server "$TMPD/drop.conf"
+log=$(ip6_migrate_templates "$TMPD/drop.conf" "$TMPD/peer.conf")
+assert_contains "$(cat "$TMPD/drop.conf")" 'MASQUERADE${IP6_POSTUP:+; ${IP6_POSTUP}}' "DROP variant PostUp migrated"
+assert_contains "$(cat "$TMPD/drop.conf")" 'MASQUERADE${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}' "DROP variant PostDown migrated"
+assert_eq "0" "$(grep -c 'DROP' "$TMPD/drop.conf")" "DROP rules gone"
+assert_contains "$log" 'migrated PostUp' "DROP migration logged"
+
+# idempotent: second run changes nothing and logs nothing about migration
+before=$(cat "$TMPD/server.conf" "$TMPD/peer.conf")
+log=$(ip6_migrate_templates "$TMPD/server.conf" "$TMPD/peer.conf")
+assert_eq "$before" "$(cat "$TMPD/server.conf" "$TMPD/peer.conf")" "second run is a no-op"
+assert_eq "" "$log" "second run is silent"
+
+# customised PostUp: warned, untouched, other lines still migrated
+old_server "$TMPD/custom.conf"
+sed -i.bak 's|^PostUp = .*|PostUp = iptables -A FORWARD -i %i -j ACCEPT; /config/my-hook.sh|' "$TMPD/custom.conf"
+log=$(ip6_migrate_templates "$TMPD/custom.conf" "$TMPD/peer.conf")
+assert_contains "$log" 'PostUp line is customised' "customised PostUp warned"
+assert_contains "$(cat "$TMPD/custom.conf")" 'PostUp = iptables -A FORWARD -i %i -j ACCEPT; /config/my-hook.sh' "customised PostUp untouched"
+assert_contains "$(cat "$TMPD/custom.conf")" '${SERVER_IP6:+' "Address still migrated in customised file"
+
+# user already added the placeholder to a customised line: silent
+printf 'PostUp = my-fw.sh${IP6_POSTUP:+; ${IP6_POSTUP}}\nAddress = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}\nPostDown = x${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}\n' > "$TMPD/marker.conf"
+log=$(ip6_migrate_templates "$TMPD/marker.conf" "$TMPD/peer.conf")
+assert_eq "" "$log" "marker present -> silent"
 
 echo "PASS ${PASS} / FAIL ${FAIL}"
 [[ $FAIL -eq 0 ]]
