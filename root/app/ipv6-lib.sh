@@ -42,6 +42,8 @@ ip6_peer_addr() {
 }
 
 # Sets IP6_PREFIX ("" when IPv6 is disabled) and IP6_SUBNET_EFFECTIVE.
+# Uses the ip6_stack_enabled probe defined below: without an IPv6 stack the
+# container cannot even hold the address, so no prefix may be handed out.
 ip6_resolve_subnet() {
     local requested="${IP6_SUBNET:-}" derived
     derived=$(ip6_derive_prefix "${INTERFACE}")
@@ -49,6 +51,19 @@ ip6_resolve_subnet() {
         IP6_PREFIX=""
         IP6_SUBNET_EFFECTIVE="off"
         echo "**** IPv6 is disabled (IP6_SUBNET=off); peers get IPv4 addresses only ****"
+        return 0
+    fi
+    # No IPv6 stack: 'ip -6 address add' and 'ip -6 route add' would fail, and
+    # awg-quick (set -e, teardown trap) would take the whole tunnel down with
+    # them - including IPv4. Behave exactly as IP6_SUBNET=off instead.
+    if ! ip6_stack_enabled; then
+        IP6_PREFIX=""
+        IP6_SUBNET_EFFECTIVE="off"
+        if [[ -n "${requested}" ]]; then
+            echo "**** IPv6 is disabled in this container's kernel (sysctl net.ipv6.conf.all.disable_ipv6=1), so IP6_SUBNET=\"${requested}\" is ignored; peers get IPv4 addresses only ****"
+        else
+            echo "**** IPv6 is disabled in this container's kernel (sysctl net.ipv6.conf.all.disable_ipv6=1); peers get IPv4 addresses only ****"
+        fi
         return 0
     fi
     if [[ -z "${requested}" ]]; then
@@ -73,6 +88,11 @@ ip6_has_default_route() {
 }
 ip6_forwarding_enabled() {
     [[ "$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)" == "1" ]]
+}
+# Listing the table is enough: it fails when ip6table_nat cannot be loaded, and
+# a MASQUERADE PostUp on such a host fails and takes the whole tunnel with it.
+ip6_nat_available() {
+    ip6tables -t nat -S >/dev/null 2>&1
 }
 
 # Sets IP6_EXIT_EFFECTIVE, IP6_POSTUP, IP6_POSTDOWN from IP6_EXIT and IP6_PREFIX.
@@ -111,7 +131,13 @@ ip6_resolve_exit() {
         elif ! ip6_forwarding_enabled; then
             mode="off"; reason="sysctl net.ipv6.conf.all.forwarding is 0"
         elif ip6_is_ula "${IP6_PREFIX}"; then
-            mode="nat"
+            # Only on the auto path: a forced nat is honoured verbatim, failure
+            # and all (spec 4.2). auto must not pick a mode whose PostUp fails.
+            if ip6_nat_available; then
+                mode="nat"
+            else
+                mode="off"; reason="IPv6 NAT is unavailable in this container (the host kernel has no usable ip6table_nat)"
+            fi
         else
             mode="routed"
         fi

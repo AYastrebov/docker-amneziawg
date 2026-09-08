@@ -69,6 +69,16 @@ assert_eq "fd0a:0d0d:0000::2/128" "$(ip6_peer_addr 'fd0a:0d0d:0000::' 10.13.13.2
 assert_eq "fd0a:0d0d:0000::10/128" "$(ip6_peer_addr 'fd0a:0d0d:0000::' 10.13.13.10)" "peer .10 literal"
 assert_eq "fd0a:0d0d:0000::254/128" "$(ip6_peer_addr 'fd0a:0d0d:0000::' 10.13.13.254)" "peer .254"
 
+# ---- probe overrides ---------------------------------------------------
+# The four probes read the container's own netns, which the test host does not
+# have. Override them all up front so every resolver test is deterministic;
+# the defaults describe a host with a full IPv6 stack.
+stack=1; route=0; fwd=0; natok=1
+ip6_stack_enabled()     { [[ $stack == 1 ]]; }
+ip6_has_default_route() { [[ $route == 1 ]]; }
+ip6_forwarding_enabled(){ [[ $fwd == 1 ]]; }
+ip6_nat_available()     { [[ $natok == 1 ]]; }
+
 # ---- resolve_subnet ----------------------------------------------------
 INTERFACE=10.13.13
 unset IP6_SUBNET
@@ -91,12 +101,27 @@ log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFEC
 assert_contains "$log" 'IP6_SUBNET "bogus" is invalid' "invalid warns"
 assert_eq "fd0a:0d0d:0000::|fd0a:0d0d:0000::/64" "${log##*$'\n'}" "invalid -> derived"
 
+# no IPv6 stack in the container: no prefix at all, or awg-quick's 'ip -6 addr
+# add' fails and set -e tears the whole tunnel (IPv4 included) down.
+stack=0
+unset IP6_SUBNET
+log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
+assert_eq "|off" "${log##*$'\n'}" "no stack -> empty prefix, off"
+assert_contains "$log" 'IPv6 is disabled in this container' "no stack: reason logged"
+assert_contains "$log" 'disable_ipv6=1' "no stack: names the sysctl"
+
+IP6_SUBNET='fd12:3456:789a::/64'
+log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
+assert_eq "|off" "${log##*$'\n'}" "no stack beats an explicit IP6_SUBNET"
+assert_contains "$log" 'IP6_SUBNET="fd12:3456:789a::/64" is ignored' "no stack: explicit setting is called out"
+
+IP6_SUBNET=off
+log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
+assert_eq "|off" "${log##*$'\n'}" "no stack + off -> off"
+assert_contains "$log" 'IP6_SUBNET=off' "off is reported as off, not as a missing stack"
+stack=1
+
 # ---- resolve_exit ------------------------------------------------------
-# Probes are overridden so the tests do not depend on the host's network.
-stack=0; route=0; fwd=0
-ip6_stack_enabled()     { [[ $stack == 1 ]]; }
-ip6_has_default_route() { [[ $route == 1 ]]; }
-ip6_forwarding_enabled(){ [[ $fwd == 1 ]]; }
 
 ACCEPT='ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT'
 # off keeps wg0 -> wg0 forwarding open so peers can still reach each other over IPv6, as they can over IPv4
@@ -105,14 +130,14 @@ REJECT="${INTRA}; ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-p
 masq() { printf 'ip6tables -t nat -A POSTROUTING -s %s/64 -o eth+ -j MASQUERADE' "$1"; }
 MASQ=$(masq fd0a:0d0d:0000::)
 
-run_exit() {  # <IP6_EXIT> <IP6_PREFIX> <stack> <route> <fwd> -> "mode|postup|postdown" on last line
-    IP6_EXIT=$1 IP6_PREFIX=$2 stack=$3 route=$4 fwd=$5
+run_exit() {  # <IP6_EXIT> <IP6_PREFIX> <stack> <route> <fwd> [natok] -> "mode|postup|postdown" on last line
+    IP6_EXIT=$1 IP6_PREFIX=$2 stack=$3 route=$4 fwd=$5 natok=${6:-1}
     local out
     out=$(ip6_resolve_exit; printf '\n%s|%s|%s' "$IP6_EXIT_EFFECTIVE" "$IP6_POSTUP" "$IP6_POSTDOWN")
     printf '%s' "${out##*$'\n'}"
 }
 run_exit_log() {
-    IP6_EXIT=$1 IP6_PREFIX=$2 stack=$3 route=$4 fwd=$5
+    IP6_EXIT=$1 IP6_PREFIX=$2 stack=$3 route=$4 fwd=$5 natok=${6:-1}
     ip6_resolve_exit
 }
 
@@ -146,6 +171,17 @@ assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 0 1)" 'no IPv6 default r
 assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 0 1)" 'enable_ipv6: true' "off hint names the fix"
 assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 1 0)" 'forwarding' "off reason: forwarding"
 assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 1 1)" 'IPv6 exit: nat' "nat logged"
+
+# ip6table_nat missing: auto must not choose a mode whose PostUp fails and
+# takes the tunnel (IPv4 included) down with it.
+assert_eq "off|${REJECT}|${REJECT//-A/-D}" \
+    "$(run_exit auto fd0a:0d0d:0000:: 1 1 1 0)" "auto: ula but no ip6table_nat -> off"
+assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 1 1 0)" 'IPv6 NAT is unavailable' "off reason names NAT"
+assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 1 1 0)" 'ip6table_nat' "off reason names the module"
+assert_eq "routed|${ACCEPT}|${ACCEPT//-A/-D}" \
+    "$(run_exit auto 2001:db8:1:: 1 1 1 0)" "auto: routed does not need NAT"
+assert_eq "nat|${ACCEPT}; ${MASQ}|${ACCEPT//-A/-D}; ${MASQ/-A/-D}" \
+    "$(run_exit nat fd0a:0d0d:0000:: 1 1 1 0)" "forced nat is honoured without ip6table_nat"
 
 # ---- template migration ------------------------------------------------
 TMPD=$(mktemp -d)

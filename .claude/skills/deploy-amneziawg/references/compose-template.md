@@ -35,7 +35,8 @@ services:
 
       # ---- IPv6 ----
       # Peers always get a ULA IPv6 address (derived from INTERNAL_SUBNET) so dual-stack
-      # clients cannot leak IPv6 around the tunnel. Egress needs the two IPv6 lines below.
+      # clients cannot leak IPv6 around the tunnel. Egress is opt-in: uncomment the two
+      # IPv6 lines further down (forwarding sysctl + networks block).
       # - IP6_SUBNET=fd12:3456:789a::/64   # Own prefix; "off" disables IPv6 entirely
       # - IP6_EXIT=auto                    # auto | nat | routed | off
 
@@ -70,15 +71,30 @@ services:
       - net.ipv6.conf.all.disable_ipv6=0   # not required for this feature: Docker >= 27 disables IPv6
                                             # per interface (eth0 only), wg0 is unaffected — see
                                             # docs/superpowers/specs/2026-08-26-ipv6-support-design.md §3
-      - net.ipv6.conf.all.forwarding=1     # IPv6 egress (with enable_ipv6 below)
+      # IPv6 egress (opt-in): uncomment the next line together with the networks
+      # block at the bottom of this file. Needs Docker >= 27 - on older Docker
+      # 'docker compose up' fails while creating the network.
+      # - net.ipv6.conf.all.forwarding=1
     restart: unless-stopped
 
-networks:
-  default:
-    enable_ipv6: true   # Docker >= 27 allocates a ULA and does NAT66; remove to keep IPv6 off
+# IPv6 egress (opt-in): uncomment together with the forwarding sysctl above.
+# Docker >= 27 allocates a ULA for this network and does NAT66 itself; without
+# these two the container still gives peers IPv6 addresses and rejects their
+# IPv6 traffic, which is what stops a dual-stack client leaking around the VPN.
+# networks:
+#   default:
+#     enable_ipv6: true
 ```
 
 ## Important rules when filling the template
+
+### IPv6 egress lines stay commented unless the host qualifies
+
+The forwarding sysctl and the `networks:` block ship commented out. Uncomment
+both only when the requirements-phase check reported host IPv6 egress **and**
+Docker >= 27 — on older Docker, `docker compose up` fails while creating the
+network, before the container starts. Leaving them commented is safe: peers
+still get IPv6 addresses (no leak) and their IPv6 is rejected at the server.
 
 ### Port mapping with custom `SERVERPORT`
 
