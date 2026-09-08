@@ -62,3 +62,77 @@ ip6_resolve_subnet() {
     IP6_SUBNET_EFFECTIVE="${IP6_PREFIX}/64"
     echo "**** IPv6 tunnel prefix is ${IP6_SUBNET_EFFECTIVE} (server $(ip6_server_addr "${IP6_PREFIX}")) ****"
 }
+
+# ---- exit mode ---------------------------------------------------------
+# Probes read the container's own netns. Tests override them.
+ip6_stack_enabled() {
+    [[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" == "0" ]]
+}
+ip6_has_default_route() {
+    [[ -n "$(ip -6 route show default 2>/dev/null)" ]]
+}
+ip6_forwarding_enabled() {
+    [[ "$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)" == "1" ]]
+}
+
+# Sets IP6_EXIT_EFFECTIVE, IP6_POSTUP, IP6_POSTDOWN from IP6_EXIT and IP6_PREFIX.
+ip6_resolve_exit() {
+    local mode="${IP6_EXIT:-auto}" reason=""
+    local accept='ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT'
+    # "off" is no IPv6 *egress*, not no IPv6: a bare "-i %i -j REJECT" would also
+    # reject wg0 -> wg0 forwarding and make peers unreachable to each other over
+    # IPv6 while IPv4 (ACCEPT) still allows it. Keep the intra-tunnel path open.
+    local intra='ip6tables -A FORWARD -i %i -o %i -j ACCEPT'
+    local reject="${intra}; ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited"
+    # NAT only the tunnel prefix: the IPv4 rule is unqualified for historical
+    # reasons, but on network_mode: host an unqualified -o eth+ would NAT66
+    # every flow the host forwards.
+    local masq="ip6tables -t nat -A POSTROUTING -s ${IP6_PREFIX}/64 -o eth+ -j MASQUERADE"
+    mode="${mode,,}"
+    IP6_POSTUP=""
+    IP6_POSTDOWN=""
+    if [[ -z "${IP6_PREFIX}" ]]; then
+        IP6_EXIT_EFFECTIVE="off"
+        echo "**** IPv6 exit: off (IPv6 disabled; no ip6tables rules will be applied) ****"
+        return 0
+    fi
+    case "${mode}" in
+        auto|nat|routed|off) ;;
+        *)
+            echo "**** IP6_EXIT \"${IP6_EXIT}\" is not one of auto|nat|routed|off; using auto ****"
+            mode="auto"
+            ;;
+    esac
+    if [[ "${mode}" == "auto" ]]; then
+        if ! ip6_stack_enabled; then
+            mode="off"; reason="IPv6 is disabled in the container (sysctl net.ipv6.conf.all.disable_ipv6=1)"
+        elif ! ip6_has_default_route; then
+            mode="off"; reason="no IPv6 default route in the container"
+        elif ! ip6_forwarding_enabled; then
+            mode="off"; reason="sysctl net.ipv6.conf.all.forwarding is 0"
+        elif ip6_is_ula "${IP6_PREFIX}"; then
+            mode="nat"
+        else
+            mode="routed"
+        fi
+    fi
+    IP6_EXIT_EFFECTIVE="${mode}"
+    case "${mode}" in
+        nat)    IP6_POSTUP="${accept}; ${masq}" ;;
+        routed) IP6_POSTUP="${accept}" ;;
+        off)    IP6_POSTUP="${reject}" ;;
+    esac
+    IP6_POSTDOWN="${IP6_POSTUP//ip6tables -A/ip6tables -D}"
+    IP6_POSTDOWN="${IP6_POSTDOWN//-t nat -A/-t nat -D}"
+    case "${mode}" in
+        nat)    echo "**** IPv6 exit: nat (peers' IPv6 traffic is masqueraded out of eth+) ****" ;;
+        routed) echo "**** IPv6 exit: routed (no NAT; ${IP6_PREFIX}/64 must be routed to this host) ****" ;;
+        off)
+            if [[ -n "${reason}" ]]; then
+                echo "**** IPv6 exit: off (${reason}). Peers get IPv6 addresses but IPv6 traffic is rejected. To enable IPv6 egress set 'networks.default.enable_ipv6: true' and sysctl 'net.ipv6.conf.all.forwarding=1' in docker-compose.yml, or set IP6_SUBNET=off to disable IPv6 entirely ****"
+            else
+                echo "**** IPv6 exit: off (IP6_EXIT=off). Peers get IPv6 addresses but IPv6 traffic is rejected ****"
+            fi
+            ;;
+    esac
+}
