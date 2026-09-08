@@ -17,12 +17,14 @@
 - `IP6_SUBNET=off` must produce output byte-identical to the current container (no `ip6tables` at all).
 - `auto` exit → `nat` only when: `disable_ipv6=0` AND a v6 default route exists AND `forwarding=1` AND prefix is ULA. GUA → `routed`. Otherwise `off` (REJECT rules) with a one-line reason.
 - Peer IPv6 host part is the IPv4 last octet written literally (`10.13.13.10` → `::10/128`).
-- Derived prefix: `a.b.c.0` → `fd<aa>:<bb><cc>:0000::/64` in lowercase hex (`10.13.13.0` → `fd0a:0d0d:0000::`).
+- Derived prefix: `a.b.c.0` → `fd<aa>:<bb><cc>:0000::/64` in lowercase hex (`10.13.13.0` → `fd0a:0d0d:0000::`). Octets are forced to base 10 (`$((10#$a))`) so a leading zero (`08`) is not parsed as octal by `printf`.
 - Templates in `/config/templates/` are user-owned: migrate by exact-line match, warn (never fail) on customised lines.
 - Existing user `Corefile`s are never edited; only hinted.
 - Shell style: 4-space indent, `# shellcheck shell=bash`, `local` only inside functions, `**** message ****` log format.
-- Commits: conventional commits; end every commit message with the two trailer lines used in this repo (`Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD`).
-- Branch: `feature/ipv6-support`, rebased on `master` at `656d987` (#36 merged: shipped template now has `ip6tables ... DROP` rules and `SERVERURL=auto` already uses `curl -4`).
+- Commits: conventional commits; end every commit message with the two trailer lines used in this repo (`Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01GGHf8F8V3NTCBcwnJwxGvw`). If the session changes, use the trailer the harness gives you, not the one written here.
+- Branch: `feature/ipv6-support`, rebased on `master` at `c2b446d` (2026-09-08). #36 is merged (shipped template has `ip6tables ... DROP` rules, `SERVERURL=auto` uses `curl -4`); #41 reworked `generate_awg_params()` and #43 added the CI `changes` gate. Line anchors below are from `c2b446d`; re-grep if they drift.
+- Peer-to-peer IPv6 inside the tunnel must work in **every** exit mode: the `off` rule set starts with `-i %i -o %i -j ACCEPT`, because a bare `-i %i -j REJECT` also rejects `wg0 → wg0` forwarding (IPv4 allows it; the families must not differ). The NAT rule is scoped to the tunnel prefix (`-s ${IP6_PREFIX}/64`).
+- `tests/` is not an image path for the CI `changes` gate, so the unit tests run in their own ungated job, never inside `build`.
 
 ---
 
@@ -47,10 +49,12 @@ Create `tests/ipv6-lib.test.sh`:
 
 ```bash
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # IP6_SUBNET/IP6_EXIT/INTERFACE are read by the library under test
 # Unit tests for root/app/ipv6-lib.sh. Runs on any machine with bash >= 4.
 # Usage: bash tests/ipv6-lib.test.sh
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=../root/app/ipv6-lib.sh
 source "${HERE}/../root/app/ipv6-lib.sh"
 
@@ -85,6 +89,7 @@ assert_contains() {
 assert_eq "fd0a:0d0d:0000::" "$(ip6_derive_prefix 10.13.13)" "derive default subnet"
 assert_eq "fdc0:a801:0000::" "$(ip6_derive_prefix 192.168.1)" "derive 192.168.1"
 assert_eq "fdac:1f00:0000::" "$(ip6_derive_prefix 172.31.0)" "derive 172.31.0"
+assert_eq "fdc0:a808:0000::" "$(ip6_derive_prefix 192.168.08)" "leading-zero octet is decimal, not octal"
 
 # ---- validation --------------------------------------------------------
 assert_eq "fd12:3456:789a::" "$(ip6_validate_subnet 'fd12:3456:789a::/64')" "valid ULA /64"
@@ -152,6 +157,7 @@ Create `root/app/ipv6-lib.sh`:
 ```bash
 #!/bin/bash
 # shellcheck shell=bash
+# shellcheck disable=SC2034  # IP6_* globals are consumed by init-amneziawg-confs/run
 # IPv6 helpers for init-amneziawg-confs. Sourced, not executed.
 # Pure functions read only their arguments or the documented globals so the
 # file can be unit-tested outside the container (tests/ipv6-lib.test.sh).
@@ -164,7 +170,8 @@ Create `root/app/ipv6-lib.sh`:
 ip6_derive_prefix() {
     local iface=$1 a b c
     IFS=. read -r a b c <<< "${iface}"
-    printf 'fd%02x:%02x%02x:0000::\n' "${a}" "${b}" "${c}"
+    # 10# forces decimal: printf treats a leading zero (08) as octal and fails
+    printf 'fd%02x:%02x%02x:0000::\n' "$((10#${a}))" "$((10#${b}))" "$((10#${c}))"
 }
 
 # Accepts "<1-4 hextets>::/64" (any case). Prints the lowercase prefix without
@@ -217,12 +224,12 @@ ip6_resolve_subnet() {
 - [ ] **Step 4: Run tests**
 
 Run: `bash tests/ipv6-lib.test.sh`
-Expected: last line `PASS 33 / FAIL 0` (count may differ by ±1 if you add cases; `FAIL 0` is the requirement).
+Expected: last line `PASS 34 / FAIL 0` (count may differ by ±1 if you add cases; `FAIL 0` is the requirement).
 
 - [ ] **Step 5: Lint**
 
-Run: `shellcheck -s bash root/app/ipv6-lib.sh tests/ipv6-lib.test.sh` (install with `brew install shellcheck` if missing).
-Expected: no output.
+Run: `shellcheck -s bash -x root/app/ipv6-lib.sh tests/ipv6-lib.test.sh` (install with `brew install shellcheck` if missing).
+Expected: no output. `-x` follows the `# shellcheck source=` directive in the test, and `source-path=SCRIPTDIR` makes that path resolve from the test's own directory rather than the cwd; without both, shellcheck reports SC1091 (info), which is noise, not a finding.
 
 - [ ] **Step 6: Commit**
 
@@ -230,8 +237,8 @@ Expected: no output.
 git add root/app/ipv6-lib.sh tests/ipv6-lib.test.sh
 git commit -m "feat(ipv6): add prefix derivation and validation library with unit tests
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GGHf8F8V3NTCBcwnJwxGvw"
 ```
 
 ---
@@ -246,7 +253,7 @@ Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
 - Consumes: `IP6_PREFIX` from `ip6_resolve_subnet`.
 - Produces:
   - Probe functions (overridable in tests): `ip6_stack_enabled`, `ip6_has_default_route`, `ip6_forwarding_enabled` — exit 0/1.
-  - `ip6_resolve_exit` — reads `IP6_EXIT` (default `auto`), `IP6_PREFIX`; sets `IP6_EXIT_EFFECTIVE` (`nat|routed|off`), `IP6_POSTUP`, `IP6_POSTDOWN` (both `""` when `IP6_PREFIX` is empty); logs one line.
+  - `ip6_resolve_exit` — reads `IP6_EXIT` (default `auto`), `IP6_PREFIX`; sets `IP6_EXIT_EFFECTIVE` (`nat|routed|off`), `IP6_POSTUP`, `IP6_POSTDOWN` (both `""` when `IP6_PREFIX` is empty); logs one line. Rule sets: `nat` = ACCEPT ×2 + `MASQUERADE -s <prefix>/64`; `routed` = ACCEPT ×2; `off` = intra-tunnel ACCEPT (`-i %i -o %i`) + REJECT ×2.
 
 - [ ] **Step 1: Append failing tests**
 
@@ -261,8 +268,11 @@ ip6_has_default_route() { [[ $route == 1 ]]; }
 ip6_forwarding_enabled(){ [[ $fwd == 1 ]]; }
 
 ACCEPT='ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT'
-REJECT='ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited'
-MASQ='ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE'
+# off keeps wg0 -> wg0 forwarding open so peers can still reach each other over IPv6, as they can over IPv4
+INTRA='ip6tables -A FORWARD -i %i -o %i -j ACCEPT'
+REJECT="${INTRA}; ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited"
+masq() { printf 'ip6tables -t nat -A POSTROUTING -s %s/64 -o eth+ -j MASQUERADE' "$1"; }
+MASQ=$(masq fd0a:0d0d:0000::)
 
 run_exit() {  # <IP6_EXIT> <IP6_PREFIX> <stack> <route> <fwd> -> "mode|postup|postdown" on last line
     IP6_EXIT=$1 IP6_PREFIX=$2 stack=$3 route=$4 fwd=$5
@@ -277,6 +287,9 @@ run_exit_log() {
 
 assert_eq "nat|${ACCEPT}; ${MASQ}|${ACCEPT//-A/-D}; ${MASQ/-A/-D}" \
     "$(run_exit auto fd0a:0d0d:0000:: 1 1 1)" "auto: ula+route+fwd -> nat"
+assert_eq "nat|${ACCEPT}; $(masq fd12:3456:789a::)|${ACCEPT//-A/-D}; $(masq fd12:3456:789a:: | sed s/-A/-D/)" \
+    "$(run_exit auto fd12:3456:789a:: 1 1 1)" "nat rule is scoped to the resolved prefix"
+assert_contains "$(run_exit auto fd0a:0d0d:0000:: 1 0 1)" "${INTRA}; ip6tables -A FORWARD -i %i -j REJECT" "off: intra-tunnel ACCEPT precedes the REJECTs"
 assert_eq "routed|${ACCEPT}|${ACCEPT//-A/-D}" \
     "$(run_exit auto 2001:db8:1:: 1 1 1)" "auto: gua+route+fwd -> routed"
 assert_eq "off|${REJECT}|${REJECT//-A/-D}" \
@@ -330,8 +343,15 @@ ip6_forwarding_enabled() {
 ip6_resolve_exit() {
     local mode="${IP6_EXIT:-auto}" reason=""
     local accept='ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT'
-    local reject='ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited'
-    local masq='ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE'
+    # "off" is no IPv6 *egress*, not no IPv6: a bare "-i %i -j REJECT" would also
+    # reject wg0 -> wg0 forwarding and make peers unreachable to each other over
+    # IPv6 while IPv4 (ACCEPT) still allows it. Keep the intra-tunnel path open.
+    local intra='ip6tables -A FORWARD -i %i -o %i -j ACCEPT'
+    local reject="${intra}; ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited"
+    # NAT only the tunnel prefix: the IPv4 rule is unqualified for historical
+    # reasons, but on network_mode: host an unqualified -o eth+ would NAT66
+    # every flow the host forwards.
+    local masq="ip6tables -t nat -A POSTROUTING -s ${IP6_PREFIX}/64 -o eth+ -j MASQUERADE"
     mode="${mode,,}"
     IP6_POSTUP=""
     IP6_POSTDOWN=""
@@ -390,12 +410,12 @@ Expected: `PASS <n> / FAIL 0`
 - [ ] **Step 5: Lint and commit**
 
 ```bash
-shellcheck -s bash root/app/ipv6-lib.sh tests/ipv6-lib.test.sh
+shellcheck -s bash -x root/app/ipv6-lib.sh tests/ipv6-lib.test.sh
 git add root/app/ipv6-lib.sh tests/ipv6-lib.test.sh
 git commit -m "feat(ipv6): resolve exit mode (auto/nat/routed/off) into PostUp rules
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GGHf8F8V3NTCBcwnJwxGvw"
 ```
 
 ---
@@ -562,12 +582,12 @@ Note the markers are `${SERVER_IP6`, `${IP6_POSTUP`, `${IP6_POSTDOWN`, `${CLIENT
 
 ```bash
 bash tests/ipv6-lib.test.sh | tail -1        # PASS n / FAIL 0
-shellcheck -s bash root/app/ipv6-lib.sh tests/ipv6-lib.test.sh
+shellcheck -s bash -x root/app/ipv6-lib.sh tests/ipv6-lib.test.sh
 git add root/app/ipv6-lib.sh tests/ipv6-lib.test.sh
 git commit -m "feat(ipv6): migrate both template generations to IPv6 placeholders, warn on customised lines
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GGHf8F8V3NTCBcwnJwxGvw"
 ```
 
 ---
@@ -659,12 +679,12 @@ Replace `root/defaults/Corefile` with:
 
 ```bash
 bash tests/ipv6-lib.test.sh | tail -1        # PASS n / FAIL 0
-shellcheck -s bash root/app/ipv6-lib.sh tests/ipv6-lib.test.sh
+shellcheck -s bash -x root/app/ipv6-lib.sh tests/ipv6-lib.test.sh
 git add root/app/ipv6-lib.sh tests/ipv6-lib.test.sh root/defaults/Corefile
 git commit -m "feat(ipv6): suppress AAAA answers from CoreDNS when IPv6 exit is off
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GGHf8F8V3NTCBcwnJwxGvw"
 ```
 
 ---
@@ -674,7 +694,7 @@ Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
 **Files:**
 - Modify: `root/defaults/server.conf:2,5,6`
 - Modify: `root/defaults/peer.conf:2`
-- Modify: `root/etc/s6-overlay/s6-rc.d/init-amneziawg-confs/run` — see exact anchors below (line numbers are from `656d987`; re-grep if they drift)
+- Modify: `root/etc/s6-overlay/s6-rc.d/init-amneziawg-confs/run` — see exact anchors below (line numbers are from `c2b446d`; re-grep if they drift)
 - Modify: `Dockerfile` (only if `root/app` is not already copied — check first)
 
 **Interfaces:**
@@ -730,7 +750,7 @@ ip6_migrate_templates /config/templates/server.conf /config/templates/peer.conf
 
 - [ ] **Step 4: Resolve prefix and exit mode in the server-mode main logic**
 
-After the `ALLOWEDIPS` echo (line ~701, `echo "**** AllowedIPs for peers $ALLOWEDIPS ****"`) add:
+After the `ALLOWEDIPS` echo (line 766, `echo "**** AllowedIPs for peers $ALLOWEDIPS ****"`) add:
 
 ```bash
     # IPv6: derive/validate the tunnel prefix, then decide what the server
@@ -746,13 +766,13 @@ After the `ALLOWEDIPS` echo (line ~701, `echo "**** AllowedIPs for peers $ALLOWE
 
 - [ ] **Step 5: Compute the peer address and server AllowedIPs in `generate_confs`**
 
-Line 550 (`CLIENT_IP=$(grep "Address" ... | awk '{print $NF}')`) becomes:
+Line 615 (`CLIENT_IP=$(grep "Address" ... | awk '{print $NF}')`) becomes:
 
 ```bash
                 CLIENT_IP=$(grep "Address" "/config/${PEER_ID}/${PEER_ID}.conf" | awk '{print $NF}' | cut -d, -f1)
 ```
 
-Immediately before `if [[ -f "/config/${PEER_ID}/presharedkey-${PEER_ID}" ]]; then` (line ~563, after the `for idx` loop's closing `fi`) add:
+Immediately before `if [[ -f "/config/${PEER_ID}/presharedkey-${PEER_ID}" ]]; then` (line 628, after the `for idx` loop's closing `fi`; the loop starts at 620) add:
 
 ```bash
             # IPv6 address is always recomputed from the IPv4 one, never read
@@ -763,7 +783,7 @@ Immediately before `if [[ -f "/config/${PEER_ID}/presharedkey-${PEER_ID}" ]]; th
             fi
 ```
 
-The two server `AllowedIPs` heredocs (lines ~607 and ~611) become:
+The two server `AllowedIPs` heredocs (lines 672 and 676) become:
 
 ```bash
 AllowedIPs = ${CLIENT_IP}/32${CLIENT_IP6:+,${CLIENT_IP6}},${!SERVER_ALLOWEDIPS}
@@ -775,14 +795,14 @@ AllowedIPs = ${CLIENT_IP}/32${CLIENT_IP6:+,${CLIENT_IP6}}
 
 - [ ] **Step 6: Persist and detect changes**
 
-In `save_vars()` after `ORIG_PERSISTENTKEEPALIVE_PEERS="$PERSISTENTKEEPALIVE_PEERS"` add:
+In `save_vars()` after `ORIG_PERSISTENTKEEPALIVE_PEERS="$PERSISTENTKEEPALIVE_PEERS"` (line 709) add:
 
 ```bash
 ORIG_IP6_SUBNET="$IP6_SUBNET_EFFECTIVE"
 ORIG_IP6_EXIT="$IP6_EXIT_EFFECTIVE"
 ```
 
-In the regeneration `if`, after the `PERSISTENTKEEPALIVE_PEERS` comparison line add:
+In the regeneration `if`, after the `PERSISTENTKEEPALIVE_PEERS` comparison line (794) add:
 
 ```bash
            [[ "$IP6_SUBNET_EFFECTIVE" != "$ORIG_IP6_SUBNET" ]] || \
@@ -791,7 +811,7 @@ In the regeneration `if`, after the `PERSISTENTKEEPALIVE_PEERS` comparison line 
 
 - [ ] **Step 7: Write the CoreDNS filter**
 
-Replace the `# set up CoreDNS` block (lines ~770-772) with:
+Replace the `# set up CoreDNS` block (lines 835-837) with:
 
 ```bash
 # set up CoreDNS
@@ -838,8 +858,8 @@ DUDE" | sed -n "2p;5p;6p"
 '
 ```
 Expected:
-- block 1 (`off`): `Address = 10.13.13.1,fd0a:0d0d:0000::1/128`; PostUp ends with `; ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited`; PostDown same with `-D`.
-- block 2 (`nat`): PostUp ends with `; ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE`.
+- block 1 (`off`): `Address = 10.13.13.1,fd0a:0d0d:0000::1/128`; PostUp ends with `; ip6tables -A FORWARD -i %i -o %i -j ACCEPT; ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited`; PostDown same with `-D`.
+- block 2 (`nat`): PostUp ends with `; ip6tables -t nat -A POSTROUTING -s fd0a:0d0d:0000::/64 -o eth+ -j MASQUERADE`.
 - block 3 (`IP6_SUBNET=off`): `Address = 10.13.13.1`, PostUp/PostDown end at `MASQUERADE` with **no** `ip6tables` at all — identical to the pre-feature template output.
 
 - [ ] **Step 10: Commit**
@@ -848,8 +868,8 @@ Expected:
 git add root/defaults/server.conf root/defaults/peer.conf root/etc/s6-overlay/s6-rc.d/init-amneziawg-confs/run tests/ipv6-lib.test.sh
 git commit -m "feat(ipv6): assign ULA addresses to peers and drive ip6tables from the resolved exit mode
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GGHf8F8V3NTCBcwnJwxGvw"
 ```
 
 ---
@@ -857,19 +877,27 @@ Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
 ### Task 6: CI — unit tests and container smoke scenarios
 
 **Files:**
-- Modify: `.github/workflows/docker-build.yml` — new step before `Build and push` (line ~107); new scenarios inside `Test image (PR only)` before `echo "All smoke tests passed!"` (line ~257).
+- Modify: `.github/workflows/docker-build.yml` — new **job** `unit-tests` after the `changes` job (lines 40-88); new scenarios inside `Test image (PR only)` before `echo "All smoke tests passed!"` (line ~315).
 
 **Interfaces:**
 - Consumes: log strings and file names from Tasks 1–5 exactly as written there.
 
-- [ ] **Step 1: Add the unit-test step**
+- [ ] **Step 1: Add the unit-test job**
 
-Insert before the `Build and push` step:
+The `build` job is gated by `changes` (#43), which only fires for `Dockerfile`, `root/`, `.dockerignore` and the workflow. `tests/` is not on that list, so a step inside `build` would be skipped for a tests-only change and the PR would go green without running anything. Add a separate job that always runs; it takes seconds. Insert after the `changes` job:
 
 ```yaml
-      - name: Unit tests (ipv6-lib)
+  unit-tests:
+    name: Unit tests (ipv6-lib)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run
         run: bash tests/ipv6-lib.test.sh
 ```
+
+Do **not** add `tests/` to `IMAGE_PATHS`: that would rebuild and republish the image for a test edit.
 
 - [ ] **Step 2: Add the smoke scenarios**
 
@@ -902,6 +930,7 @@ Insert before `echo "All smoke tests passed!" >> "$GITHUB_STEP_SUMMARY"`:
           docker exec awgci grep -q '^AllowedIPs = 10.13.13.2/32,fd0a:0d0d:0000::2/128$' /config/wg_confs/wg0.conf || fail "server AllowedIPs lacks /128"
           docker exec awgci grep -q 'icmp6-adm-prohibited' /config/wg_confs/wg0.conf || fail "PostUp lacks REJECT on a no-IPv6 runner"
           docker exec awgci grep -q 'MASQUERADE; ip6tables' /config/wg_confs/wg0.conf || fail "ip6tables rules not appended after v4 MASQUERADE"
+          docker exec awgci grep -q 'ip6tables -A FORWARD -i %i -o %i -j ACCEPT; ip6tables -A FORWARD -i %i -j REJECT' /config/wg_confs/wg0.conf || fail "off: intra-tunnel ACCEPT must precede the REJECTs"
           docker exec awgci grep -q 'template IN AAAA' /config/coredns/generated/ipv6.conf || fail "AAAA filter not written"
           docker exec awgci grep -q 'import /config/coredns/generated' /config/coredns/Corefile || fail "Corefile lacks import"
           docker logs awgci 2>&1 | grep -q 'IPv6 exit: off (no IPv6 default route' || fail "auto did not log the off reason"
@@ -986,20 +1015,20 @@ python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/docker-build
 git add .github/workflows/docker-build.yml
 git commit -m "ci: unit-test ipv6-lib and smoke-test IPv6 config generation scenarios
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GGHf8F8V3NTCBcwnJwxGvw"
 git push -u origin feature/ipv6-support
 gh pr create --draft --title "feat: IPv6 support (ULA by default, NAT66 egress, leak-proof)" --body "Implements docs/superpowers/specs/2026-08-26-ipv6-support-design.md. Supersedes #36.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
+https://claude.ai/code/session_01GGHf8F8V3NTCBcwnJwxGvw"
 ```
 
 - [ ] **Step 4: Watch CI**
 
 Run: `gh pr checks --watch`
-Expected: `build` passes. If a scenario fails, the `fail` helper dumps logs and both confs into the job log; fix the product (not the test) unless the test's expectation contradicts the spec.
+Expected: `unit-tests` and `build` pass. If a scenario fails, the `fail` helper dumps logs and both confs into the job log; fix the product (not the test) unless the test's expectation contradicts the spec.
 
 ---
 
@@ -1078,6 +1107,11 @@ publishes it on `[::]` too, so a hostname with an AAAA record also works, but
 
 ### Upgrading
 
+Existing peer configs keep working after the upgrade, but a device is
+protected from the IPv6 leak only once you re-import its regenerated conf
+(`/app/show-peer <name>`): the leak is closed by the peer *having* an IPv6
+address, and that lives in the client's conf, not on the server.
+
 Templates in `/config/templates/` are migrated automatically (the old
 hard-coded `ip6tables` rules are replaced by `${IP6_POSTUP}` placeholders). If
 you customised `PostUp`/`PostDown`/`Address`, the log says which line was left
@@ -1108,7 +1142,7 @@ Next to the `ALLOWEDIPS` comment add:
       # - IP6_EXIT=auto                    # auto | nat | routed | off
 ```
 
-In `sysctls:` add `- net.ipv6.conf.all.forwarding=1` with the comment `# IPv6 egress (with enable_ipv6 below)`, and after the service add:
+In `sysctls:` add `- net.ipv6.conf.all.forwarding=1` with the comment `# IPv6 egress (with enable_ipv6 below)`. Leave the existing `net.ipv6.conf.all.disable_ipv6=0` line but change its comment to say it is not required (Docker ≥ 27 disables IPv6 per interface on `eth0` only; `wg0` is unaffected) — do not present it as a prerequisite in the README. After the service add:
 
 ```yaml
 networks:
@@ -1157,8 +1191,8 @@ Deploy skill:
 git add README.md docker-compose.yml CHANGELOG.md CLAUDE.md .claude/skills
 git commit -m "docs: document IPv6 support, compose example and deploy-skill checks
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01P2tF5XWZge3gugw6xP8tbD"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GGHf8F8V3NTCBcwnJwxGvw"
 git push
 ```
 
@@ -1182,9 +1216,13 @@ Expected: `naming to docker.io/library/amneziawg-ipv6:test`.
 ssh webdock 'cd ~/amneziawg-31 && cp docker-compose.yml docker-compose.yml.pre-ipv6 && sed -i "s|image: .*|image: amneziawg-ipv6:test|" docker-compose.yml && docker compose up -d && sleep 20 && docker logs amneziawg-31 2>&1 | grep -E "IPv6|migrated|customised"'
 ssh webdock 'docker exec amneziawg-31 ip6tables -S FORWARD; docker exec amneziawg-31 cat /config/peer1/peer1.conf | grep Address; docker exec amneziawg-31 dig +short AAAA google.com @127.0.0.1; docker ps --format "{{.Names}} {{.Status}}" | grep amneziawg'
 ```
-Expected: log shows `IPv6 tunnel prefix is fd0a:0d0e:0000::/64` (subnet is `10.13.14.0`), `migrated Address/PostUp/PostDown line`, `IPv6 exit: off (no IPv6 default route`; `ip6tables -S FORWARD` shows the two `REJECT` rules; peer1 `Address = 10.13.14.2,fd0a:0d0e:0000::2/128`; `dig AAAA` prints nothing; `amneziawg` container's status still shows its old uptime. Note the templates on this stack carry the hand-added `RandomTrailers`/`DisableCookies` lines from the earlier 3.1 deployment — they are unrelated to the migrated lines and must survive.
+Expected: log shows `IPv6 tunnel prefix is fd0a:0d0e:0000::/64` (subnet is `10.13.14.0`), `migrated Address/PostUp/PostDown line` (this stack runs the **pre-#36** ACCEPT/MASQUERADE templates — verified live 2026-09-08 — so the first migration row is the one exercised), `IPv6 exit: off (no IPv6 default route`; `ip6tables -S FORWARD` shows `-i wg0 -o wg0 -j ACCEPT` followed by the two `REJECT` rules; peer1 `Address = 10.13.14.2,fd0a:0d0e:0000::2/128`; `dig AAAA` prints nothing; `amneziawg` container's status still shows its old uptime. Note the templates on this stack carry the hand-added `RandomTrailers`/`DisableCookies` lines from the earlier 3.1 deployment — they are unrelated to the migrated lines and must survive.
 
 From a phone/laptop with the peer1 conf (re-import it — the address changed): `curl -6 -m 5 https://ifconfig.co` must fail immediately with "Network unreachable"/"Connection refused"-class error, not a timeout; `curl -4 https://ifconfig.co` returns the VPS IPv4.
+
+- [ ] **Step 2b: Client compatibility gate**
+
+The regenerated conf's `Address = 10.13.14.2,fd0a:0d0e:0000::2/128` is a new shape for every client. Import it into (a) the Amnezia app on iOS and Android and (b) a Keenetic through awg-manager's NDMS import, and confirm each tunnel handshakes. **If either rejects the comma-separated `Address`, stop here and report** — the default-on decision must be revisited before the PR leaves draft, because `IP6_SUBNET=off` is the only escape and it is not a default. Record the app/firmware versions in the PR.
 
 - [ ] **Step 3: Phase B — enable Docker IPv6**
 
@@ -1193,7 +1231,9 @@ ssh webdock 'cd ~/amneziawg-31 && python3 - <<EOF
 import re,io
 p="docker-compose.yml"; s=open(p).read()
 if "net.ipv6.conf.all.forwarding=1" not in s:
-    s=s.replace("      - net.ipv6.conf.all.disable_ipv6=0","      - net.ipv6.conf.all.disable_ipv6=0\n      - net.ipv6.conf.all.forwarding=1")
+    # anchor on the sysctl this stack actually has; it has no disable_ipv6 line
+    assert "      - net.ipv4.conf.all.src_valid_mark=1" in s
+    s=s.replace("      - net.ipv4.conf.all.src_valid_mark=1","      - net.ipv4.conf.all.src_valid_mark=1\n      - net.ipv6.conf.all.forwarding=1")
 if "enable_ipv6" not in s:
     s+="\nnetworks:\n  default:\n    enable_ipv6: true\n"
 open(p,"w").write(s)
@@ -1201,7 +1241,7 @@ EOF
 docker compose up -d 2>&1 | tail -2 && sleep 20 && docker logs amneziawg-31 2>&1 | grep -E "IPv6 exit|regenerating"'
 ssh webdock 'docker exec amneziawg-31 sh -c "ip -6 route show default; ip6tables -S FORWARD; ip6tables -t nat -S POSTROUTING; dig +short AAAA google.com @127.0.0.1 | head -1; curl -6 -s -m 5 https://ifconfig.co"'
 ```
-Expected: compose recreates the network with IPv6 (`amneziawg-31_default` gets a `fd..::/64`), log shows `IPv6 exit: nat` and `Server related environment variables changed, regenerating`; `ip6tables -S FORWARD` shows two `ACCEPT`, nat shows `MASQUERADE`; `dig AAAA` returns an address; `curl -6` from inside the container prints `2a0f:f01:210:f1::` (the host's IPv6).
+Expected: compose recreates the network with IPv6 (`amneziawg-31_default` gets a `fd..::/64`), log shows `IPv6 exit: nat` and `Server related environment variables changed, regenerating`; `ip6tables -S FORWARD` shows two `ACCEPT`, nat shows `-s fd0a:0d0e:0000::/64 -o eth+ -j MASQUERADE`; `dig AAAA` returns an address; `curl -6` from inside the container prints `2a0f:f01:210:f1::` (the host's IPv6).
 
 From the peer: `curl -6 https://ifconfig.co` returns `2a0f:f01:210:f1::`; https://browserleaks.com/ip shows the VPS for both families.
 
@@ -1240,6 +1280,8 @@ Then ask the user whether to post the #36 follow-up.
 ---
 
 ## Self-review
+
+**Review 2026-09-08 (against `c2b446d`):** intra-tunnel ACCEPT in `off` mode and prefix-scoped NAT (Task 2, spec §4.2); ungated `unit-tests` job because `tests/` is outside the `changes` gate (Task 6); Phase B compose edit anchored on the sysctl the stack actually has (Task 8); client-compat gate for the comma `Address` (Task 8 step 2b); upgrade-does-not-protect-until-reimport stated (Task 7, spec §4.5); octal-safe prefix derivation (Task 1); anchors re-pointed at `c2b446d`; attribution trailer updated.
 
 **Spec coverage:** §4.1 addressing → Tasks 1, 5. §4.2 exit → Tasks 2, 5. §4.3 templates/migration (both PostUp generations) → Tasks 3, 5. §4.4 CoreDNS → Tasks 4, 5. §4.5 persistence → Task 5 step 6. §4.6 compose/deploy skill → Task 7. §4.7 PR #36 → Task 9 (the `curl -4` half is already on master). §5 failure modes: invalid prefix (T1), customised template (T3), forced nat fails loudly (documented T7), `IP6_SUBNET=off` no rules (T2 test "no prefix beats forced nat", T6 scenario 2), custom Corefile hint (T4). §6 testing: spec scenarios 1–7 → Task 6 (spec 7 `routed` = CI 5; spec 5 & 6 = CI 6, 6b & 7); VPS → Task 8. §7 docs → Task 7.
 
