@@ -96,8 +96,9 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
-      - net.ipv6.conf.all.disable_ipv6=0   # not required for this feature: Docker >= 27 disables
-                                            # IPv6 per interface on eth0 only, wg0 is unaffected
+      - net.ipv6.conf.all.disable_ipv6=0   # not required for this feature: Docker >= 27 disables IPv6
+                                            # per interface (eth0 only), wg0 is unaffected — see
+                                            # docs/superpowers/specs/2026-08-26-ipv6-support-design.md §3
       - net.ipv6.conf.all.forwarding=1     # IPv6 egress (with enable_ipv6 below)
     restart: unless-stopped
 

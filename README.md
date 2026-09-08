@@ -259,11 +259,13 @@ To turn a switch back off, set it to `off` rather than removing it — removing 
 Every peer gets an IPv6 address inside the tunnel by default (a ULA derived from
 `INTERNAL_SUBNET`), so dual-stack clients route **all** their IPv6 into the
 tunnel instead of leaking it around the VPN. What happens to that traffic at
-the server depends on whether the container itself has IPv6:
+the server depends on whether the container has a working IPv6 stack: the
+IPv6 stack enabled, a default route, and `net.ipv6.conf.all.forwarding=1` all
+present:
 
-| container has IPv6 route | `IP6_EXIT=auto` resolves to | peers experience |
+| container has IPv6 (stack + route + forwarding) | `IP6_EXIT=auto` resolves to | peers experience |
 |---|---|---|
-| no (default Docker network) | `off` — traffic is rejected with ICMPv6, and the built-in DNS returns no AAAA records | IPv4-only, no leak, no hangs |
+| no (default Docker network, or forwarding sysctl missing) | `off` — traffic is rejected with ICMPv6, and the built-in DNS returns no AAAA records | IPv4-only, no leak, no hangs |
 | yes | `nat` — masqueraded out of the container like IPv4 | full IPv6 |
 
 ### Enable IPv6 egress
