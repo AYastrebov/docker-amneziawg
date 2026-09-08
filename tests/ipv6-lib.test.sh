@@ -91,5 +91,61 @@ log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFEC
 assert_contains "$log" 'IP6_SUBNET "bogus" is invalid' "invalid warns"
 assert_eq "fd0a:0d0d:0000::|fd0a:0d0d:0000::/64" "${log##*$'\n'}" "invalid -> derived"
 
+# ---- resolve_exit ------------------------------------------------------
+# Probes are overridden so the tests do not depend on the host's network.
+stack=0; route=0; fwd=0
+ip6_stack_enabled()     { [[ $stack == 1 ]]; }
+ip6_has_default_route() { [[ $route == 1 ]]; }
+ip6_forwarding_enabled(){ [[ $fwd == 1 ]]; }
+
+ACCEPT='ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT'
+# off keeps wg0 -> wg0 forwarding open so peers can still reach each other over IPv6, as they can over IPv4
+INTRA='ip6tables -A FORWARD -i %i -o %i -j ACCEPT'
+REJECT="${INTRA}; ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited"
+masq() { printf 'ip6tables -t nat -A POSTROUTING -s %s/64 -o eth+ -j MASQUERADE' "$1"; }
+MASQ=$(masq fd0a:0d0d:0000::)
+
+run_exit() {  # <IP6_EXIT> <IP6_PREFIX> <stack> <route> <fwd> -> "mode|postup|postdown" on last line
+    IP6_EXIT=$1 IP6_PREFIX=$2 stack=$3 route=$4 fwd=$5
+    local out
+    out=$(ip6_resolve_exit; printf '\n%s|%s|%s' "$IP6_EXIT_EFFECTIVE" "$IP6_POSTUP" "$IP6_POSTDOWN")
+    printf '%s' "${out##*$'\n'}"
+}
+run_exit_log() {
+    IP6_EXIT=$1 IP6_PREFIX=$2 stack=$3 route=$4 fwd=$5
+    ip6_resolve_exit
+}
+
+assert_eq "nat|${ACCEPT}; ${MASQ}|${ACCEPT//-A/-D}; ${MASQ/-A/-D}" \
+    "$(run_exit auto fd0a:0d0d:0000:: 1 1 1)" "auto: ula+route+fwd -> nat"
+assert_eq "nat|${ACCEPT}; $(masq fd12:3456:789a::)|${ACCEPT//-A/-D}; $(masq fd12:3456:789a:: | sed s/-A/-D/)" \
+    "$(run_exit auto fd12:3456:789a:: 1 1 1)" "nat rule is scoped to the resolved prefix"
+assert_contains "$(run_exit auto fd0a:0d0d:0000:: 1 0 1)" "${INTRA}; ip6tables -A FORWARD -i %i -j REJECT" "off: intra-tunnel ACCEPT precedes the REJECTs"
+assert_eq "routed|${ACCEPT}|${ACCEPT//-A/-D}" \
+    "$(run_exit auto 2001:db8:1:: 1 1 1)" "auto: gua+route+fwd -> routed"
+assert_eq "off|${REJECT}|${REJECT//-A/-D}" \
+    "$(run_exit auto fd0a:0d0d:0000:: 1 0 1)" "auto: no route -> off"
+assert_eq "off|${REJECT}|${REJECT//-A/-D}" \
+    "$(run_exit auto fd0a:0d0d:0000:: 1 1 0)" "auto: no forwarding -> off"
+assert_eq "off|${REJECT}|${REJECT//-A/-D}" \
+    "$(run_exit auto fd0a:0d0d:0000:: 0 1 1)" "auto: stack disabled -> off"
+assert_eq "nat|${ACCEPT}; ${MASQ}|${ACCEPT//-A/-D}; ${MASQ/-A/-D}" \
+    "$(run_exit nat fd0a:0d0d:0000:: 0 0 0)" "forced nat ignores probes"
+assert_eq "routed|${ACCEPT}|${ACCEPT//-A/-D}" \
+    "$(run_exit routed fd0a:0d0d:0000:: 0 0 0)" "forced routed"
+assert_eq "off|${REJECT}|${REJECT//-A/-D}" \
+    "$(run_exit off fd0a:0d0d:0000:: 1 1 1)" "forced off"
+assert_eq "nat|${ACCEPT}; ${MASQ}|${ACCEPT//-A/-D}; ${MASQ/-A/-D}" \
+    "$(run_exit NAT fd0a:0d0d:0000:: 0 0 0)" "mode is case-insensitive"
+assert_eq "off||" "$(run_exit auto '' 1 1 1)" "no prefix -> off, no rules"
+assert_eq "off||" "$(run_exit nat '' 1 1 1)" "no prefix beats forced nat"
+assert_eq "nat|${ACCEPT}; ${MASQ}|${ACCEPT//-A/-D}; ${MASQ/-A/-D}" \
+    "$(run_exit bogus fd0a:0d0d:0000:: 1 1 1)" "unknown mode -> auto"
+assert_contains "$(run_exit_log bogus fd0a:0d0d:0000:: 1 1 1)" 'IP6_EXIT "bogus" is not one of' "unknown mode warns"
+assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 0 1)" 'no IPv6 default route' "off reason: route"
+assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 0 1)" 'enable_ipv6: true' "off hint names the fix"
+assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 1 0)" 'forwarding' "off reason: forwarding"
+assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 1 1)" 'IPv6 exit: nat' "nat logged"
+
 echo "PASS ${PASS} / FAIL ${FAIL}"
 [[ $FAIL -eq 0 ]]
