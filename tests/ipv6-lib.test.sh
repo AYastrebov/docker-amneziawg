@@ -223,5 +223,26 @@ printf 'PostUp = my-fw.sh${IP6_POSTUP:+; ${IP6_POSTUP}}\nAddress = ${INTERFACE}.
 log=$(ip6_migrate_templates "$TMPD/marker.conf" "$TMPD/peer.conf")
 assert_eq "" "$log" "marker present -> silent"
 
+# ---- coredns filter ----------------------------------------------------
+CD="$TMPD/coredns"; mkdir -p "$CD"
+printf '. {\n    forward . /etc/resolv.conf\n}\n' > "$CD/Corefile"
+log=$(ip6_write_coredns_filter off "$CD")
+assert_contains "$(cat "$CD/generated/ipv6.conf")" 'template IN AAAA .' "off -> AAAA filter written"
+assert_contains "$(cat "$CD/generated/ipv6.conf")" 'rcode NOERROR' "filter answers NOERROR"
+assert_contains "$log" 'import /config/coredns/generated/*.conf' "custom Corefile gets a hint"
+
+log=$(ip6_write_coredns_filter nat "$CD")
+assert_eq "" "$(cat "$CD/generated/ipv6.conf")" "nat -> filter cleared"
+assert_eq "0" "$(ip6_write_coredns_filter routed "$CD"; wc -c < "$CD/generated/ipv6.conf" | tr -d ' ')" "routed -> filter cleared"
+
+printf '. {\n    import /config/coredns/generated/*.conf\n    forward . /etc/resolv.conf\n}\n' > "$CD/Corefile"
+log=$(ip6_write_coredns_filter off "$CD")
+assert_eq "" "$log" "Corefile with import -> no hint"
+
+rm -rf "$CD"; mkdir -p "$CD"
+log=$(ip6_write_coredns_filter off "$CD")
+assert_contains "$(cat "$CD/generated/ipv6.conf")" 'template IN AAAA' "works before Corefile exists"
+assert_eq "" "$log" "no Corefile -> no hint"
+
 echo "PASS ${PASS} / FAIL ${FAIL}"
 [[ $FAIL -eq 0 ]]
