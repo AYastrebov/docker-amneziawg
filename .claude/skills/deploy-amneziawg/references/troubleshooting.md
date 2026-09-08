@@ -197,3 +197,8 @@ docker compose down
 sudo rm <deploy-dir>/config/server/awg_params
 docker compose up -d  # re-randomizes AWG_* and rewrites configs, but server keypair survives
 ```
+
+## IPv6
+
+- **`ip6tables: ... No chain/target/match by that name` in the log and the tunnel does not start** — the host lacks an IPv6 netfilter module (`ip6table_nat` or `ip6table_filter`). With `IP6_EXIT=auto` this only happens when you forced a mode; otherwise set `IP6_SUBNET=off`.
+- **IPv6 sites hang on peers** — the peer is not using the container's DNS (`PEERDNS` set to a public resolver) and the exit is `off`. Either enable IPv6 egress or set `PEERDNS=auto`.
