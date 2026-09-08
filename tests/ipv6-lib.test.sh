@@ -244,5 +244,12 @@ log=$(ip6_write_coredns_filter off "$CD")
 assert_contains "$(cat "$CD/generated/ipv6.conf")" 'template IN AAAA' "works before Corefile exists"
 assert_eq "" "$log" "no Corefile -> no hint"
 
+# ---- shipped defaults match the migration targets -----------------------
+assert_eq "1" "$(grep -Fxc -- "$IP6_NEW_SERVER_ADDRESS" "$HERE/../root/defaults/server.conf")" "defaults/server.conf Address == IP6_NEW_SERVER_ADDRESS"
+assert_eq "1" "$(grep -Fxc -- "$IP6_NEW_POSTUP" "$HERE/../root/defaults/server.conf")" "defaults/server.conf PostUp == IP6_NEW_POSTUP"
+assert_eq "1" "$(grep -Fxc -- "$IP6_NEW_POSTDOWN" "$HERE/../root/defaults/server.conf")" "defaults/server.conf PostDown == IP6_NEW_POSTDOWN"
+assert_eq "1" "$(grep -Fxc -- "$IP6_NEW_PEER_ADDRESS" "$HERE/../root/defaults/peer.conf")" "defaults/peer.conf Address == IP6_NEW_PEER_ADDRESS"
+assert_eq "1" "$(grep -Fc -- "$IP6_COREDNS_IMPORT" "$HERE/../root/defaults/Corefile")" "defaults/Corefile has import"
+
 echo "PASS ${PASS} / FAIL ${FAIL}"
 [[ $FAIL -eq 0 ]]

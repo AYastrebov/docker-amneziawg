@@ -29,6 +29,12 @@ if ! grep -q 'PresharedKey' /config/templates/peer.conf; then
     sed -i 's|^Endpoint|PresharedKey = \$\(cat /config/\${PEER_ID}/presharedkey-\${PEER_ID}\)\nEndpoint|' /config/templates/peer.conf
 fi
 
+# IPv6 helpers (prefix derivation, exit mode, template migration, CoreDNS filter)
+# shellcheck source=../../../../app/ipv6-lib.sh
+source /app/ipv6-lib.sh
+# move IPv6 address/firewall placeholders into user templates (backwards compatibility)
+ip6_migrate_templates /config/templates/server.conf /config/templates/peer.conf
+
 # ============================================================================
 # AWG obfuscation parameter helpers
 # ============================================================================
@@ -612,7 +618,7 @@ DUDE"
                 awg genpsk > "/config/${PEER_ID}/presharedkey-${PEER_ID}"
             fi
             if [[ -f "/config/${PEER_ID}/${PEER_ID}.conf" ]]; then
-                CLIENT_IP=$(grep "Address" "/config/${PEER_ID}/${PEER_ID}.conf" | awk '{print $NF}')
+                CLIENT_IP=$(grep "Address" "/config/${PEER_ID}/${PEER_ID}.conf" | awk '{print $NF}' | cut -d, -f1)
                 if [[ -n "${ORIG_INTERFACE}" ]] && [[ "${INTERFACE}" != "${ORIG_INTERFACE}" ]]; then
                     CLIENT_IP="${CLIENT_IP//${ORIG_INTERFACE}/${INTERFACE}}"
                 fi
@@ -624,6 +630,12 @@ DUDE"
                         break
                     fi
                 done
+            fi
+            # IPv6 address is always recomputed from the IPv4 one, never read
+            # back, so a prefix change is applied on regeneration.
+            CLIENT_IP6=""
+            if [[ -n "${IP6_PREFIX}" ]]; then
+                CLIENT_IP6=$(ip6_peer_addr "${IP6_PREFIX}" "${CLIENT_IP}")
             fi
             if [[ -f "/config/${PEER_ID}/presharedkey-${PEER_ID}" ]]; then
                 # create peer conf with presharedkey
@@ -669,11 +681,11 @@ DUDE
             if [[ -n "${!SERVER_ALLOWEDIPS}" ]]; then
                 echo "Adding ${!SERVER_ALLOWEDIPS} to wg0.conf's AllowedIPs for peer ${i}"
                 cat <<DUDE >> /config/wg_confs/wg0.conf
-AllowedIPs = ${CLIENT_IP}/32,${!SERVER_ALLOWEDIPS}
+AllowedIPs = ${CLIENT_IP}/32${CLIENT_IP6:+,${CLIENT_IP6}},${!SERVER_ALLOWEDIPS}
 DUDE
             else
                 cat <<DUDE >> /config/wg_confs/wg0.conf
-AllowedIPs = ${CLIENT_IP}/32
+AllowedIPs = ${CLIENT_IP}/32${CLIENT_IP6:+,${CLIENT_IP6}}
 DUDE
             fi
             # add PersistentKeepalive if the peer is specified
@@ -707,6 +719,8 @@ ORIG_PEERS="$PEERS"
 ORIG_INTERFACE="$INTERFACE"
 ORIG_ALLOWEDIPS="$ALLOWEDIPS"
 ORIG_PERSISTENTKEEPALIVE_PEERS="$PERSISTENTKEEPALIVE_PEERS"
+ORIG_IP6_SUBNET="$IP6_SUBNET_EFFECTIVE"
+ORIG_IP6_EXIT="$IP6_EXIT_EFFECTIVE"
 ORIG_AWG_VERSION="$AWG_VERSION"
 ORIG_AWG_JC="$AWG_JC"
 ORIG_AWG_JMIN="$AWG_JMIN"
@@ -764,6 +778,16 @@ if [[ -n "$PEERS" ]]; then
     INTERFACE=$(echo "$INTERNAL_SUBNET" | awk 'BEGIN{FS=OFS="."} NF--')
     ALLOWEDIPS=${ALLOWEDIPS:-0.0.0.0/0, ::/0}
     echo "**** AllowedIPs for peers $ALLOWEDIPS ****"
+    # IPv6: derive/validate the tunnel prefix, then decide what the server
+    # does with peers' IPv6 traffic. Sets IP6_PREFIX, IP6_SUBNET_EFFECTIVE,
+    # IP6_EXIT_EFFECTIVE, IP6_POSTUP, IP6_POSTDOWN.
+    ip6_resolve_subnet
+    ip6_resolve_exit
+    SERVER_IP6=""
+    if [[ -n "${IP6_PREFIX}" ]]; then
+        # shellcheck disable=SC2034  # consumed via eval'd template expansion in generate_confs
+        SERVER_IP6=$(ip6_server_addr "${IP6_PREFIX}")
+    fi
     if [[ -z "$PEERDNS" ]] || [[ "$PEERDNS" = "auto" ]]; then
         PEERDNS="${INTERFACE}.1"
         echo "**** PEERDNS var is either not set or is set to \"auto\", setting peer DNS to ${INTERFACE}.1 to use the container host's DNS. ****"
@@ -792,6 +816,8 @@ if [[ -n "$PEERS" ]]; then
            [[ "$INTERFACE" != "$ORIG_INTERFACE" ]] || \
            [[ "$ALLOWEDIPS" != "$ORIG_ALLOWEDIPS" ]] || \
            [[ "$PERSISTENTKEEPALIVE_PEERS" != "$ORIG_PERSISTENTKEEPALIVE_PEERS" ]] || \
+           [[ "$IP6_SUBNET_EFFECTIVE" != "$ORIG_IP6_SUBNET" ]] || \
+           [[ "$IP6_EXIT_EFFECTIVE" != "$ORIG_IP6_EXIT" ]] || \
            [[ "$AWG_VERSION" != "$ORIG_AWG_VERSION" ]] || \
            [[ "$AWG_JC" != "$ORIG_AWG_JC" ]] || \
            [[ "$AWG_JMIN" != "$ORIG_AWG_JMIN" ]] || \
@@ -833,8 +859,12 @@ fi
 
 # set up CoreDNS
 if [[ ! -f /config/coredns/Corefile ]]; then
+    mkdir -p /config/coredns
     cp /defaults/Corefile /config/coredns/Corefile
 fi
+# AAAA filter for peers: active only when IPv6 exit is off. In client mode
+# IP6_EXIT_EFFECTIVE is unset; treat that as "no filter".
+ip6_write_coredns_filter "${IP6_EXIT_EFFECTIVE:-nat}" /config/coredns
 
 # let openresolv take control of resolv.conf
 resolvconf -a control 2>/dev/null < /etc/resolv.conf
