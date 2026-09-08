@@ -600,7 +600,7 @@ Claude-Session: https://claude.ai/code/session_01GGHf8F8V3NTCBcwnJwxGvw"
 - Modify: `root/defaults/Corefile`
 
 **Interfaces:**
-- Produces: `ip6_write_coredns_filter <exit-effective> <coredns-dir>` — always (re)writes `<coredns-dir>/generated/ipv6.conf`: the AAAA template block when `<exit-effective>` is `off`, an empty file otherwise. If `<coredns-dir>/Corefile` exists and lacks the fixed string `import /config/coredns/generated/*.conf`, logs one hint. Exits 0.
+- Produces: `ip6_write_coredns_filter <exit-effective> <coredns-dir>` — always (re)writes `<coredns-dir>/generated/ipv6.conf`: the AAAA template block when `<exit-effective>` is `off`, an empty file otherwise. When `<exit-effective>` is `off` and `<coredns-dir>/Corefile` exists and lacks the fixed string `import /config/coredns/generated/*.conf`, logs one hint (scoped to `off`: in the other modes the generated file is empty, so a missing import changes nothing). Exits 0.
 
 - [ ] **Step 1: Append failing tests**
 
@@ -651,11 +651,17 @@ template IN AAAA . {
     rcode NOERROR
 }
 EOF
+        # The hint is scoped to "off" on purpose: nat/routed always write an
+        # empty ipv6.conf, so a missing import has no observable effect there
+        # and the warning would be pure noise. It also has to be inside this
+        # branch for the Step 1 test to pass -- the "routed" case reads the
+        # function's stdout and wc's output through one command substitution,
+        # so an unconditional echo would prepend the hint to the byte count.
+        if [[ -f "${dir}/Corefile" ]] && ! grep -Fq -- "${IP6_COREDNS_IMPORT}" "${dir}/Corefile"; then
+            echo "**** ${dir}/Corefile has no '${IP6_COREDNS_IMPORT}' line; AAAA filtering for peers is not active. Add that line inside the server block to enable it ****"
+        fi
     else
         : > "${dir}/generated/ipv6.conf"
-    fi
-    if [[ -f "${dir}/Corefile" ]] && ! grep -Fq -- "${IP6_COREDNS_IMPORT}" "${dir}/Corefile"; then
-        echo "**** ${dir}/Corefile has no '${IP6_COREDNS_IMPORT}' line; AAAA filtering for peers is not active. Add that line inside the server block to enable it ****"
     fi
 }
 ```

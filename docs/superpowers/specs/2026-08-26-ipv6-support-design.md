@@ -220,7 +220,9 @@ template IN AAAA . {
 ```
 
 - Existing user `Corefile`s are not edited. If the file lacks `import
-  /config/coredns/generated/*.conf`, one log hint says what to add. If CoreDNS is disabled, the
+  /config/coredns/generated/*.conf`, one log hint says what to add. The hint is
+  emitted only when `IP6_EXIT_EFFECTIVE` is `off` — in the other modes the
+  generated file is empty, so a missing import has no observable effect. If CoreDNS is disabled, the
   generated file is still written (harmless) and no hint is logged.
 - `template` has priority over `forward` in CoreDNS' plugin order, so AAAA
   queries never reach the upstream resolver.
