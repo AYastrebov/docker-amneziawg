@@ -1,7 +1,7 @@
 # IPv6 support for docker-amneziawg — design
 
 Date: 2026-08-26
-Status: approved design, pending implementation
+Status: approved design, pending implementation. Reviewed 2026-09-08 against master `c2b446d`; runtime assumptions re-verified on Docker 29.7.2 (local) and 29.8.0 (webdock).
 Builds on: PR #36 (`fix: update server configuration for IPv4-only support and prevent IPv6 leak`), merged as `656d987` on 2026-08-26
 
 ## 1. Problem
@@ -70,6 +70,16 @@ must be migrated (§4.3).
   `ip6tables -t nat MASQUERADE` works; the Alpine CoreDNS build includes the
   `template` plugin; `sysctl -w` inside the container is **denied** — sysctls
   must come from the compose `sysctls:` block.
+- **Docker ≥ 27 disables IPv6 per interface, not per container.** On a network
+  without IPv6 the container has `conf/eth0/disable_ipv6=1` but
+  `conf/all` and `conf/default` at `0`, so an interface created at runtime —
+  which is what `wg0` is — takes an IPv6 address and routes without any
+  sysctl. Verified 2026-09-08 with a veth in a throwaway container on Docker
+  29.7.2 and 29.8.0: `ip -6 addr add fd0a:…::1/128` and `ip -6 route add
+  …/128` both succeed (they fail with `Permission denied` on `eth0`, which is
+  the wrong interface to test). The `net.ipv6.conf.all.disable_ipv6=0` sysctl
+  in the shipped compose is therefore not required for this feature; it is
+  kept as harmless.
 
 ## 4. Design
 
@@ -117,17 +127,31 @@ of `IP6_SUBNET` is applied everywhere on regeneration.
 
 | effective mode | `IP6_POSTUP` | `auto` selects it when |
 |---|---|---|
-| `nat` | `ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE` | v6 default route present **and** `forwarding=1` **and** prefix is ULA (`fc00::/7`) |
+| `nat` | `ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -s P/64 -o eth+ -j MASQUERADE` | v6 default route present **and** `forwarding=1` **and** prefix is ULA (`fc00::/7`) |
 | `routed` | the two `ACCEPT` rules only | same, but prefix is GUA |
-| `off` | `ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited` | otherwise |
+| `off` | `ip6tables -A FORWARD -i %i -o %i -j ACCEPT; ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited` | otherwise |
 | (none) | empty | `IP6_SUBNET=off` — no `ip6tables` invocation at all |
 
 `IP6_POSTDOWN` is the same list with `-A` → `-D`.
 
+Two rules in that table are deliberate and must survive refactors:
+
+- **Peer-to-peer IPv6 inside the tunnel works in every mode.** The `off`
+  rules start with `-i %i -o %i -j ACCEPT` because a bare `-i %i -j REJECT`
+  also matches `wg0 → wg0` forwarding, which would let two peers reach each
+  other over IPv4 (the v4 `ACCEPT` allows it) but not over their ULAs. `off`
+  means "no IPv6 *egress*", not "no IPv6".
+- **The NAT rule is scoped to the tunnel prefix** (`-s P/64`). The IPv4 rule
+  is unqualified for historical reasons; the v6 prefix is known, and on a
+  `network_mode: host` deployment an unqualified `-o eth+ MASQUERADE` would
+  NAT66 every flow the host forwards.
+
 Detection inputs, read inside the container:
 - route: `ip -6 route show default` non-empty
 - forwarding: `/proc/sys/net/ipv6/conf/all/forwarding` == `1`
-- ipv6 enabled: `/proc/sys/net/ipv6/conf/all/disable_ipv6` == `0`
+- ipv6 enabled: `/proc/sys/net/ipv6/conf/all/disable_ipv6` == `0` (on Docker
+  ≥ 27 this is always `0` unless the operator sets it — see §3; the check
+  exists for hosts that disable IPv6 globally)
 
 Whenever `auto` resolves to `off`, one log line states the reason and the fix,
 e.g.
@@ -172,7 +196,7 @@ PresharedKey migration, once per line, idempotent:
 Matching is exact-line (`grep -Fxq`) against each known old variant in turn;
 replacement is a line-for-line rewrite of that one line. If a template contains
 neither any old variant nor the new variable for a given row, the script logs
-`**** /config/templates/server.conf: PostUp is customised and has no ${IP6_POSTUP}; IPv6 firewall rules will not be applied. See README "IPv6" ****`
+`**** /config/templates/server.conf: PostUp line is customised and has no ${IP6_POSTUP placeholder; IPv6 will not be applied to it. See README section "IPv6" ****`
 and continues. A customised template never blocks startup.
 
 ### 4.4 CoreDNS AAAA suppression
@@ -180,8 +204,10 @@ and continues. A customised template never blocks startup.
 When `IP6_EXIT_EFFECTIVE` is `off` (including `IP6_SUBNET=off`) and CoreDNS is
 enabled, peers on `PEERDNS=auto` must not receive AAAA records. Mechanism:
 
-- The default `root/defaults/Corefile` gains `import generated/*.conf` inside
-  the server block. `/defaults/Corefile` is copied to `/config/coredns/Corefile`
+- The default `root/defaults/Corefile` gains `import /config/coredns/generated/*.conf`
+  inside the server block (absolute: an `import` path is resolved by the
+  Corefile parser, and relative resolution depends on the process's working
+  directory). `/defaults/Corefile` is copied to `/config/coredns/Corefile`
   only when absent, as today.
 - `init-amneziawg-confs` always writes `/config/coredns/generated/ipv6.conf`:
   either the block below, or an empty file (so `import` always has a match and
@@ -194,7 +220,7 @@ template IN AAAA . {
 ```
 
 - Existing user `Corefile`s are not edited. If the file lacks `import
-  generated/*.conf`, one log hint says what to add. If CoreDNS is disabled, the
+  /config/coredns/generated/*.conf`, one log hint says what to add. If CoreDNS is disabled, the
   generated file is still written (harmless) and no hint is logged.
 - `template` has priority over `forward` in CoreDNS' plugin order, so AAAA
   queries never reach the upstream resolver.
@@ -206,6 +232,12 @@ template IN AAAA . {
 
 - Upgrade: old `.donoteditthisfile` lacks both → mismatch → one regeneration.
   Peer keys, PSKs and IPv4 addresses are preserved by the existing code paths.
+  **Already-distributed peer confs keep working** — the server's `AllowedIPs`
+  gains a `/128` the client does not use, and nothing else the client relies
+  on changes — **but a client is protected from the leak only once it
+  re-imports its regenerated conf.** Goal 1 is met for the server without
+  configuration; for the installed fleet it is met one re-import at a time,
+  and the README's "Upgrading" section says so.
 - Enabling Docker IPv6 later: restart → `auto` resolves to `nat` → mismatch →
   regeneration (server `PostUp` changes; peer confs unchanged in content).
 - Not stored in `awg_params`: this is not an obfuscation parameter.
@@ -276,7 +308,17 @@ CI (`docker-build.yml` smoke, runners have no IPv6):
 7. `IP6_EXIT=routed` on the runner: `PostUp` has the two `ACCEPT` rules and no
    `MASQUERADE`; no `REJECT`.
 
-VPS (webdock, real IPv6, Docker 29): on the `amneziawg-31` stack only:
+Client compatibility gate (before the PR leaves draft): the regenerated peer
+conf now carries `Address = 10.13.14.2,fd0a:0d0e:0000::2/128`. Import it into
+the Amnezia app (iOS and Android) and into a Keenetic via awg-manager's NDMS
+import, and confirm the tunnel comes up. If either rejects the comma-separated
+`Address`, stop: the default-on decision has to be revisited, since
+`IP6_SUBNET=off` is the only escape and it is not a default.
+
+VPS (webdock, real IPv6, Docker 29): on the `amneziawg-31` stack only. Note
+this stack still runs the **pre-#36** template generation (`ip6tables ACCEPT
+×2` and `nat MASQUERADE` are live in its chains as of 2026-09-08), so the
+migration's first row is exercised for real here:
 - Before enabling Docker IPv6: from a peer, `curl -6 -m 5 ifconfig.co` fails
   immediately (not a timeout); `dig AAAA google.com @10.13.14.1` returns no
   answer; `curl -4` works. `amneziawg` (2.0) container untouched.
