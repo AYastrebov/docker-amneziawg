@@ -33,6 +33,12 @@ services:
       - PERSISTENTKEEPALIVE_PEERS=<<all OR peer names OR omit>>
       - LOG_CONFS=true
 
+      # ---- IPv6 ----
+      # Peers always get a ULA IPv6 address (derived from INTERNAL_SUBNET) so dual-stack
+      # clients cannot leak IPv6 around the tunnel. Egress needs the two IPv6 lines below.
+      # - IP6_SUBNET=fd12:3456:789a::/64   # Own prefix; "off" disables IPv6 entirely
+      # - IP6_EXIT=auto                    # auto | nat | routed | off
+
       # AWG version (omit for default 2.0)
       # - AWG_VERSION=2.0        # 2.0 (default) | 3.0 | 3.1 | 1.5
       # - AWG_RANDOM_TRAILERS=on # on/off, any AWG_VERSION; implied by 3.1. Must match on every end
@@ -61,8 +67,14 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
-      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv6.conf.all.disable_ipv6=0   # not required for this feature: Docker >= 27 disables
+                                            # IPv6 per interface on eth0 only, wg0 is unaffected
+      - net.ipv6.conf.all.forwarding=1     # IPv6 egress (with enable_ipv6 below)
     restart: unless-stopped
+
+networks:
+  default:
+    enable_ipv6: true   # Docker >= 27 allocates a ULA and does NAT66; remove to keep IPv6 off
 ```
 
 ## Important rules when filling the template
