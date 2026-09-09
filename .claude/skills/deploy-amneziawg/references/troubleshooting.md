@@ -197,3 +197,9 @@ docker compose down
 sudo rm <deploy-dir>/config/server/awg_params
 docker compose up -d  # re-randomizes AWG_* and rewrites configs, but server keypair survives
 ```
+
+## IPv6
+
+- **`ip6tables: ... No chain/target/match by that name` in the log and the tunnel does not start** — the host lacks an IPv6 netfilter module (`ip6table_nat` or `ip6table_filter`). `IP6_EXIT=auto` probes for a usable NAT table before it picks `nat` and falls back to `off` with the reason in the log, so with `auto` this can only happen when even the *filter* table is missing (the `off` mode's REJECT rules need it). A forced `IP6_EXIT=nat` or `routed` is honoured verbatim and will fail here — that is deliberate. Drop the forced mode, or set `IP6_SUBNET=off` to emit no `ip6tables` rules at all.
+- **IPv6 sites hang on peers** — the peer is not using the container's DNS (`PEERDNS` set to a public resolver) and the exit is `off`. Either enable IPv6 egress or set `PEERDNS=auto`.
+- **AAAA records still come back on an upgraded deployment** — `/config/coredns/Corefile` is only created from the image default when it is absent, so **every** installation that existed before IPv6 support keeps its old Corefile and never gets the filter. Add `import /config/coredns/generated/*.conf` inside the server block by hand and restart; the startup log says the same. Skipping it is not a leak (IPv6 is still rejected at the firewall) — clients just try IPv6, get an ICMPv6 reject and fall back, instead of never trying.
