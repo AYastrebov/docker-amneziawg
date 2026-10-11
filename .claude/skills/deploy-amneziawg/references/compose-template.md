@@ -39,7 +39,8 @@ services:
       # uncomment the forwarding sysctl and the networks block further down.
       # Templates must keep MTU >= 1280 (IPv6 minimum) or IPv6 stays off.
       # - IP6_SUBNET=auto                  # auto | <prefix>::/64 | off (default)
-      # - IP6_EXIT=auto                    # auto | nat | routed | off
+      # - IP6_EXIT=auto                    # auto | nat | routed | off. A global prefix auto-selects routed, which needs
+                                          # the host to route it on to this container - README "Routed global prefix"
 
       # AWG version (omit for default 2.0)
       # - AWG_VERSION=2.0        # 2.0 (default) | 3.0 | 3.1 | 1.5

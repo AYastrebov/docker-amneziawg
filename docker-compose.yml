@@ -45,7 +45,8 @@ services:
       # uncomment the forwarding sysctl and the networks block further down.
       # Templates must keep MTU >= 1280 (IPv6 minimum) or IPv6 stays off.
       # - IP6_SUBNET=auto                  # auto | <prefix>::/64 | off (default)
-      # - IP6_EXIT=auto                    # auto | nat | routed | off
+      # - IP6_EXIT=auto                    # auto | nat | routed | off. A global prefix auto-selects routed, which needs
+                                          # the host to route it on to this container - README "Routed global prefix"
 
       # ---- Per-peer server AllowedIPs (site-to-site VPN) ----
       # - SERVER_ALLOWEDIPS_PEER_laptop=192.168.1.0/24

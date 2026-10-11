@@ -279,7 +279,7 @@ stack enabled, a default route, and `net.ipv6.conf.all.forwarding=1`:
 | stack and `forwarding=1`, but no route / no `ip6table_nat` / no `MASQUERADE` target (default Docker network) | `off` — traffic is refused with ICMPv6, and the built-in DNS returns no AAAA records | IPv4-only, no leak, no hangs |
 | `net.ipv6.conf.all.forwarding=0` (the sysctl is not set) | `off` — the kernel drops peers' IPv6 **silently**, before any firewall rule sees it; the built-in DNS returns no AAAA records | IPv4-only, no leak; IPv6 connections that bypass the built-in DNS hang until timeout |
 | all three, ULA prefix (`IP6_SUBNET=auto`) | `nat` — masqueraded out of the interface the IPv6 default route uses, like IPv4 | full IPv6 |
-| all three, global prefix set via `IP6_SUBNET` | `routed` — forwarded unmasqueraded; that `/64` must be routed to this host | full IPv6 |
+| all three, global prefix set via `IP6_SUBNET` | `routed` — forwarded unmasqueraded. The container cannot check that the `/64` actually reaches it; see [Routed global prefix](#routed-global-prefix) | full IPv6, once the return route exists |
 
 **Set `net.ipv6.conf.all.forwarding=1` whenever you set `IP6_SUBNET`**, even
 without IPv6 egress. It is the difference between the last two `off` rows:
@@ -310,6 +310,37 @@ IPv6 changes every peer conf (it gains an IPv6 `Address`), so re-import them;
 turning on egress later changes only the server's firewall rules. `enable_ipv6`
 needs Docker ≥ 27 — on older Docker `docker compose up` fails while creating
 the network, which is why the lines are shipped commented out.
+
+### Routed global prefix
+
+`IP6_SUBNET=<global prefix>::/64` makes `auto` pick `routed`: the two `ACCEPT`
+rules and no NAT. The container only forwards. The return path has to exist
+outside it, nothing in this repo sets it up, and the startup log cannot verify
+it — `IPv6 exit: routed` means the rules were written, not that the prefix is
+reachable. You need all three:
+
+1. Your provider must **route** the `/64` to the host. The on-link `/64` most
+   VPSes attach to the NIC is not routed; using it would need NDP proxying,
+   which is out of scope.
+2. On the default bridge network the host must route the `/64` on to the
+   container, or replies never reach `wg0`. Give the container a fixed address
+   (`enable_ipv6: true` on the network plus `ipv6_address:` on the service)
+   and add a route on the host, persisted in its network configuration:
+
+   ```bash
+   ip -6 route add <prefix>::/64 via <container's fixed IPv6 address>
+   ```
+
+   With `network_mode: host`, `wg0` lives in the host's namespace and this
+   step disappears.
+3. `net.ipv6.conf.all.forwarding=1` in the container (compose `sysctls:`) and
+   on the host (`sysctl net.ipv6.conf.all.forwarding`).
+
+To test, ping a peer's tunnel address from the host (`ping -6 <prefix>::2`)
+while that peer is connected. If the host cannot reach it, step 2 is missing;
+if the host can but the Internet cannot, step 1 is. When in doubt, use
+`IP6_SUBNET=auto`: ULA plus NAT66 works on any host with IPv6 egress and
+needs none of the above.
 
 ### MTU floor
 
@@ -352,7 +383,8 @@ on both ends is the recommended value anyway.
 - `IP6_SUBNET=auto` — enable IPv6 with a ULA prefix derived from `INTERNAL_SUBNET`.
 - `IP6_SUBNET=fd12:3456:789a::/64` — enable IPv6 with your own prefix. A global (non-`fd`)
   prefix makes `auto` choose `routed` (no NAT): use it only when that `/64` is
-  actually routed to the host.
+  routed to the host *and on to the container*, see
+  [Routed global prefix](#routed-global-prefix).
 - `IP6_SUBNET=off` (or unset, the default) — no IPv6 addresses; the server
   drops peers' IPv6 with the same two `ip6tables ... -j DROP` rules earlier
   releases hard-coded. On a host without the `ip6table_filter` module those
@@ -404,6 +436,7 @@ ICMPv6 reject and falls back to IPv4, instead of never trying.
 ### Troubleshooting
 
 - **`ip6tables: ... No chain/target/match by that name` in the log and the tunnel does not start** — the host lacks an IPv6 netfilter module (`ip6table_nat`, `ip6table_filter` or `ip6t_REJECT`). `IP6_EXIT=auto` probes the nat table, the MASQUERADE target and the REJECT target and never picks a mode that needs a missing one; `off` degrades to DROP when REJECT is missing; and without the filter table IPv6 is disabled outright, all with the reason in the log, so with `auto` or `off` this does not happen. A forced `IP6_EXIT=nat` or `routed` is honoured verbatim and will fail here — that is deliberate. Drop the forced mode, or set `IP6_SUBNET=off`.
+- **`IPv6 exit: routed` in the log, peers get an IPv6 address, but their IPv6 never works** — the prefix does not reach `wg0`. `routed` only writes two `ACCEPT` rules; it cannot check that your provider routes the `/64` to the host or that the host routes it on to the container (the default bridge network needs an explicit route). Work through [Routed global prefix](#routed-global-prefix), or switch to `IP6_SUBNET=auto` for ULA + NAT66.
 - **IPv6 sites hang on peers** — the exit is `off` and `net.ipv6.conf.all.forwarding=1` is not set, so the kernel drops IPv6 silently instead of refusing it. Add the sysctl (see [IPv6](#ipv6)). Peers using the container's DNS (`PEERDNS=auto`) are mostly spared because they get no AAAA records; a peer with a public resolver, or one dialling an IPv6 literal, is not. Enabling IPv6 egress also fixes it.
 - **Tunnel fails right after `ip link set mtu NNNN up` with `RTNETLINK answers: No such device` on an `ip -6 route add`** — the MTU is below 1280 (see [MTU floor](#mtu-floor)). The container refuses to hand out IPv6 while a template pins such a value, so this is only reachable with a hand-edited generated conf, or on a client whose conf was lowered after export. Raise the MTU to 1280, or strip the IPv6 address and `::/0` from that conf.
 - **One peer's upload collapses to under 1 Mbit/s for ten minutes at a time, download is fine, and it started after that peer ran a speed test against the server host** — a PMTU cache trap on the server, confirmed with `tcpdump`. The peer's tunnel MTU is above the server's `wg0` MTU (1280). A large packet the *host itself* sends to that peer (an iperf3 server on the host, a download served by the host) exceeds `wg0`, the container answers "packet too big, mtu 1280", and the host caches that against the container's bridge address — the same address the inbound AWG port is DNAT'd to. The host then bounces every inbound AWG datagram over 1280 bytes with the same ICMP until the entry expires (`ip -6 route show cache`, `ip route get <container ip>`). It cannot happen while peer MTU ≤ server MTU, since TCP MSS keeps the host's packets within `wg0`. Keep peers at or below the server's MTU, or add TCP MSS clamping to the server template if you must raise one.

@@ -461,6 +461,25 @@ printf '# ${SERVER_IP6} is set when IPv6 is on\n' >> "$TMPD/commentaddr.conf"
 ip6_migrate_templates "$TMPD/commentaddr.conf" "$TMPD/peer.conf" > /dev/null
 assert_contains "$(cat "$TMPD/commentaddr.conf")" 'Address = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}' "comment marker: Address still migrated"
 
+# a look-alike variable on the active line is not the placeholder: it would
+# leave the template "ready" while ${IP6_POSTUP} is never expanded
+old_server "$TMPD/lookalike.conf"
+sed -i.bak 's|^PostUp = .*|PostUp = iptables -A FORWARD -i %i -j ACCEPT; ${IP6_POSTUP_EXTRA}|' "$TMPD/lookalike.conf"
+ip6_migrate_templates "$TMPD/lookalike.conf" "$TMPD/peer.conf" > "$TMPD/log"; log=$(cat "$TMPD/log")
+assert_eq "0" "$IP6_TEMPLATE_READY" "look-alike \${IP6_POSTUP_EXTRA} does not make the template ready"
+assert_contains "$log" 'PostUp/PostDown are customised' "look-alike PostUp warned"
+assert_eq "1" "$(grep -c 'ip6tables -D FORWARD -i %i -j ACCEPT' "$TMPD/lookalike.conf")" "look-alike: PostDown left alone"
+old_server "$TMPD/addrlook.conf"
+sed -i.bak 's|^Address = .*|Address = ${INTERFACE}.1${SERVER_IP6_LEGACY}|' "$TMPD/addrlook.conf"
+log=$(ip6_migrate_templates "$TMPD/addrlook.conf" "$TMPD/peer.conf")
+assert_contains "$log" 'Address line is customised and has no ${SERVER_IP6} placeholder' "look-alike Address warned"
+assert_eq "0" "$(grep -c 'SERVER_IP6:+' "$TMPD/addrlook.conf")" "look-alike Address left alone"
+# both spellings of the real placeholder count: the shipped ${VAR:+...} form and a bare ${VAR}
+printf 'PostUp = my-fw.sh${IP6_POSTUP:+; ${IP6_POSTUP}}\nAddress = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}\nPostDown = my-fw.sh down; ${IP6_POSTDOWN}\n' > "$TMPD/bare.conf"
+ip6_migrate_templates "$TMPD/bare.conf" "$TMPD/peer.conf" > "$TMPD/log"
+assert_eq "" "$(cat "$TMPD/log")" "bare \${IP6_POSTDOWN} -> silent"
+assert_eq "1" "$IP6_TEMPLATE_READY" "bare \${IP6_POSTDOWN} counts as the placeholder"
+
 # user already added the placeholder to a customised line: silent
 printf 'PostUp = my-fw.sh${IP6_POSTUP:+; ${IP6_POSTUP}}\nAddress = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}\nPostDown = x${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}\n' > "$TMPD/marker.conf"
 ip6_migrate_templates "$TMPD/marker.conf" "$TMPD/peer.conf" > "$TMPD/log"

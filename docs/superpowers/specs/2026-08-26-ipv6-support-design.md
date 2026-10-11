@@ -100,6 +100,10 @@ must be migrated (§4.3).
 > - A fast ICMPv6 refusal in `off` needs `net.ipv6.conf.all.forwarding=1`;
 >   with forwarding off the kernel drops peers' IPv6 silently. Documented,
 >   not fixed (a `prohibit` policy route is a possible follow-up).
+> - §4.2 `routed`: unchanged, but the container cannot verify the return path
+>   (provider → host, and on a bridge network host → container). The README
+>   section "Routed global prefix" lists the operator's steps and the log line
+>   points there.
 > Statements below that say "by default" describe the original design.
 
 ### 4.1 Addressing

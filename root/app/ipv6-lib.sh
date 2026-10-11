@@ -316,7 +316,7 @@ ip6_resolve_exit() {
     IP6_POSTDOWN="${IP6_POSTDOWN//-t nat -A/-t nat -D}"
     case "${mode}" in
         nat)    echo "**** IPv6 exit: nat (peers' IPv6 traffic is masqueraded out of ${dev:-eth+}) ****" ;;
-        routed) echo "**** IPv6 exit: routed (no NAT; ${IP6_PREFIX}/64 must be routed to this host) ****" ;;
+        routed) echo "**** IPv6 exit: routed (no NAT; ${IP6_PREFIX}/64 must be routed to this host and, on a bridge network, by the host to this container - the container cannot check either. See README section \"Routed global prefix\") ****" ;;
         off)
             if [[ -n "${reason}" ]]; then
                 echo "**** IPv6 exit: off (${reason}). Peers get IPv6 addresses but IPv6 traffic is rejected. To enable IPv6 egress set 'networks.default.enable_ipv6: true' and sysctl 'net.ipv6.conf.all.forwarding=1' in docker-compose.yml, or set IP6_SUBNET=off to disable IPv6 entirely ****"
@@ -347,25 +347,29 @@ IP6_NEW_POSTDOWN='PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FO
 IP6_OLD_PEER_ADDRESS='Address = ${CLIENT_IP}'
 IP6_NEW_PEER_ADDRESS='Address = ${CLIENT_IP}${CLIENT_IP6:+,${CLIENT_IP6}}'
 
-# <file> <key> <marker> -> true when an active "<key> = ..." line carries the
-# marker. A comment or an unrelated line mentioning the placeholder must not
-# count, or a template would pass as migrated while its real PostUp has none.
+# <file> <key> <var> -> true when an active "<key> = ..." line expands the
+# placeholder variable: "${var}" or a "${var:+...}"-style expansion. A comment
+# or an unrelated line mentioning it must not count, or a template would pass
+# as migrated while its real PostUp has none; nor may a look-alike such as
+# "${IP6_POSTUP_EXTRA}", which would leave IP6_TEMPLATE_READY=1 while the
+# firewall rules are never expanded and peers get unmanaged IPv6 addresses.
 ip6_key_has_marker() {
-    local file=$1 key=$2 marker=$3 line
+    local file=$1 key=$2 var=$3 line
+    local re='\$\{'"${var}"'[}:+-]'
     [[ -f "${file}" ]] || return 1
     while IFS= read -r line || [[ -n "${line}" ]]; do
         [[ "${line}" =~ ^[[:space:]]*${key}[[:space:]]*= ]] || continue
-        [[ "${line}" == *"${marker}"* ]] && return 0
+        [[ "${line}" =~ ${re} ]] && return 0
     done < "${file}"
     return 1
 }
 
-# <file> <new line> <marker> <key> <old line>...
+# <file> <new line> <var> <key> <old line>...
 ip6_migrate_line() {
-    local file=$1 new=$2 marker=$3 label=$4 old line tmp
+    local file=$1 new=$2 var=$3 label=$4 old line tmp
     shift 4
     [[ -f "${file}" ]] || return 0
-    if ip6_key_has_marker "${file}" "${label}" "${marker}"; then
+    if ip6_key_has_marker "${file}" "${label}" "${var}"; then
         return 0
     fi
     for old in "$@"; do
@@ -384,17 +388,17 @@ ip6_migrate_line() {
             return 0
         fi
     done
-    echo "**** ${file}: ${label} line is customised and has no ${marker} placeholder; IPv6 will not be applied to it. See README section \"IPv6\" ****"
+    echo "**** ${file}: ${label} line is customised and has no \${${var}} placeholder; IPv6 will not be applied to it. See README section \"IPv6\" ****"
     return 0
 }
 
-# <file> <key> <marker> <old line>... -> true when the active <key> line
-# already carries the marker or is one of the known old lines, i.e.
+# <file> <key> <var> <old line>... -> true when the active <key> line
+# already expands the placeholder or is one of the known old lines, i.e.
 # ip6_migrate_line can handle it.
 ip6_line_migratable() {
-    local file=$1 key=$2 marker=$3 old
+    local file=$1 key=$2 var=$3 old
     shift 3
-    ip6_key_has_marker "${file}" "${key}" "${marker}" && return 0
+    ip6_key_has_marker "${file}" "${key}" "${var}" && return 0
     for old in "$@"; do
         grep -Fxq -- "${old}" "${file}" && return 0
     done
@@ -408,18 +412,18 @@ ip6_line_migratable() {
 ip6_migrate_templates() {
     local server=$1 peer=$2
     IP6_TEMPLATE_READY=1
-    ip6_migrate_line "${server}" "${IP6_NEW_SERVER_ADDRESS}" '${SERVER_IP6'   'Address'  "${IP6_OLD_SERVER_ADDRESS}"
+    ip6_migrate_line "${server}" "${IP6_NEW_SERVER_ADDRESS}" SERVER_IP6   'Address'  "${IP6_OLD_SERVER_ADDRESS}"
     # PostUp and PostDown are migrated as a pair or not at all: migrating one
     # alone leaves PostDown deleting rules PostUp never added (awg-quick down
     # fails), or PostUp adding rules PostDown never removes.
     if [[ -f "${server}" ]]; then
-        if ip6_line_migratable "${server}" PostUp   '${IP6_POSTUP'   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}" &&
-           ip6_line_migratable "${server}" PostDown '${IP6_POSTDOWN' "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"; then
-            ip6_migrate_line "${server}" "${IP6_NEW_POSTUP}"   '${IP6_POSTUP'   'PostUp'   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}"
-            ip6_migrate_line "${server}" "${IP6_NEW_POSTDOWN}" '${IP6_POSTDOWN' 'PostDown' "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"
+        if ip6_line_migratable "${server}" PostUp   IP6_POSTUP   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}" &&
+           ip6_line_migratable "${server}" PostDown IP6_POSTDOWN "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"; then
+            ip6_migrate_line "${server}" "${IP6_NEW_POSTUP}"   IP6_POSTUP   'PostUp'   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}"
+            ip6_migrate_line "${server}" "${IP6_NEW_POSTDOWN}" IP6_POSTDOWN 'PostDown' "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"
             # Belt and braces: the active lines must carry the placeholders now.
-            if ! ip6_key_has_marker "${server}" PostUp '${IP6_POSTUP' ||
-               ! ip6_key_has_marker "${server}" PostDown '${IP6_POSTDOWN'; then
+            if ! ip6_key_has_marker "${server}" PostUp IP6_POSTUP ||
+               ! ip6_key_has_marker "${server}" PostDown IP6_POSTDOWN; then
                 IP6_TEMPLATE_READY=0
                 echo "**** ${server}: PostUp/PostDown still lack the \${IP6_POSTUP}/\${IP6_POSTDOWN} placeholders after migration; IPv6 is disabled. See README section \"IPv6\" ****"
             fi
@@ -428,7 +432,7 @@ ip6_migrate_templates() {
             echo "**** ${server}: PostUp/PostDown are customised and do not both carry the \${IP6_POSTUP}/\${IP6_POSTDOWN} placeholders; both were left alone and IPv6 is disabled. See README section \"IPv6\" ****"
         fi
     fi
-    ip6_migrate_line "${peer}"   "${IP6_NEW_PEER_ADDRESS}"   '${CLIENT_IP6'   'Address'  "${IP6_OLD_PEER_ADDRESS}"
+    ip6_migrate_line "${peer}"   "${IP6_NEW_PEER_ADDRESS}"   CLIENT_IP6   'Address'  "${IP6_OLD_PEER_ADDRESS}"
 }
 
 # ---- coredns AAAA filter -----------------------------------------------
