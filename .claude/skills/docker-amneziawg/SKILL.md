@@ -32,7 +32,8 @@ docker-amneziawg/
 ├── CONTEXT.md                    # Technical reference for AI agents
 ├── root/
 │   ├── app/
-│   │   └── show-peer             # QR code display utility
+│   │   ├── show-peer             # QR code display utility
+│   │   └── ipv6-lib.sh           # IPv6 prefix/exit-mode resolution, template migration (sourced, unit-tested)
 │   ├── defaults/
 │   │   ├── server.conf           # Server config template (eval+heredoc)
 │   │   ├── peer.conf             # Peer config template (eval+heredoc)
@@ -43,6 +44,8 @@ docker-amneziawg/
 │       ├── svc-coredns/              # CoreDNS service (longrun)
 │       ├── svc-amneziawg/            # Tunnel service (oneshot up/down)
 │       └── user/contents.d/          # Service registration (empty files)
+├── tests/
+│   └── ipv6-lib.test.sh          # Unit tests for root/app/ipv6-lib.sh (bash >= 4, no container needed)
 └── .github/workflows/
     ├── docker-build.yml              # Main build pipeline (multi-arch)
     └── upstream-check.yml            # Daily upstream version check
@@ -105,6 +108,7 @@ For detailed parameter docs, see [references/awg-parameters.md](references/awg-p
 
 ### Testing Changes
 ```bash
+bash tests/ipv6-lib.test.sh
 docker build -t amneziawg-test .
 docker run -d --name awg-test --cap-add NET_ADMIN \
   -e PEERS=2 -e SERVERURL=test.example.com \

@@ -138,6 +138,19 @@ the path is itself ~1280 (DS-Lite, tunnel-in-tunnel), use `path − 60 − S4` f
 When a user reports slowness despite MTU 1280, measure the path (`ping -M do` binary search)
 before concluding MTU is not the problem.
 
+**1280 is a hard floor the moment a conf carries an IPv6 address or an IPv6 route.** Linux
+removes IPv6 from an interface whose MTU drops under 1280; `awg-quick` adds the addresses
+first and sets the MTU after, so the IPv6 address vanishes and the next `ip -6 route add`
+fails with `RTNETLINK answers: No such device` — under `set -e` that takes the whole tunnel
+down, IPv4 included (seen on a real server at `MTU = 1208`, and on a Linux client with the
+matching peer conf). Windows refuses the address outright. So the constrained-path values
+above (1208/1188) are only usable in an **IPv4-only** conf: no IPv6 in `Address`, no `::/0`
+in `AllowedIPs`. A peer behind a ~1280 path that wants IPv6 inside the tunnel must reach the
+server over an IPv6 endpoint instead, where the path is normally 1492 and `1492 − 80 − S4`
+(1400) applies. `awg-lint.py` reports this combination as an error. The one exception is
+`Table = off`: `awg-quick` then installs no routes, so `AllowedIPs` is irrelevant and the tunnel
+comes up — but an IPv6 `Address` is still stripped silently, which the linter reports as a warning.
+
 ## Which values must match
 
 | Parameter | Must be identical everywhere |

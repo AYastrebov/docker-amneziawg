@@ -27,6 +27,7 @@ class Conf:
         self.path = path
         self.iface = OrderedDict()   # [Interface] keys
         self.peer_keys = []          # keys seen in any [Peer] section
+        self.peer_allowed = []       # AllowedIPs values from every [Peer] section
         self.n_peers = 0
         section = None
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -48,6 +49,8 @@ class Conf:
                     self.iface[k] = v
                 elif section == "peer":
                     self.peer_keys.append(k)
+                    if k == "AllowedIPs":
+                        self.peer_allowed.append(v)
 
     def get(self, key, default=None):
         return self.iface.get(key, default)
@@ -60,6 +63,11 @@ class Conf:
             return int(v)
         except ValueError:
             return None
+
+
+def split_list(v):
+    """'a, b,c' -> ['a', 'b', 'c']; None -> []."""
+    return [x.strip() for x in (v or "").split(",") if x.strip()]
 
 
 def parse_range(v):
@@ -238,6 +246,35 @@ def check(c, rep):
                      f"PPPoE, LTE or DS-Lite. 1280 clears ordinary paths; a path that "
                      f"is itself ~1280 needs path - {overhead4} (IPv4) / "
                      f"path - {overhead6} (IPv6)")
+    # ---- MTU vs the IPv6 floor
+    # Linux removes IPv6 from an interface whose MTU drops under 1280, and
+    # awg-quick adds the addresses *before* it sets the MTU: by the time it runs
+    # `ip -6 route add` the IPv6 address is gone, the command fails with "No such
+    # device", and under set -e the whole tunnel goes down, IPv4 included. Seen
+    # on a real server at MTU 1208 and on a Linux client with the matching peer
+    # conf. So the constrained-path values (1208/1188) are IPv4-only territory.
+    # With `Table = off` awg-quick installs no routes at all (add_route returns
+    # before `ip -6 route add`), so AllowedIPs is not a route and the tunnel does
+    # come up; the IPv6 address is still removed by the kernel, silently.
+    table_off = (c.get("Table") or "").strip().lower() == "off"
+    v6_addr = any(":" in a for a in split_list(c.get("Address")))
+    v6_route = (not table_off and
+                any(":" in a for a in split_list(",".join(c.peer_allowed))))
+    if mtu is not None and mtu < 1280 and (v6_addr or v6_route):
+        where = " and ".join(w for w, f in (("Address", v6_addr),
+                                            ("AllowedIPs", v6_route)) if f)
+        if table_off:
+            rep.warn(f"MTU {mtu} is below the IPv6 minimum of 1280 but Address carries "
+                     f"IPv6. The kernel strips that address from the interface, and with "
+                     f"Table = off nothing fails: the tunnel comes up IPv4-only and IPv6 "
+                     f"inside it silently does nothing. Use MTU 1280 or higher, or drop "
+                     f"the IPv6 address")
+        else:
+            rep.error(f"MTU {mtu} is below the IPv6 minimum of 1280 but {where} carries "
+                      f"IPv6. The kernel strips IPv6 from an interface under 1280, so "
+                      f"awg-quick fails on 'ip -6 route add' with 'No such device' and "
+                      f"the tunnel never comes up. Use MTU 1280 or higher, or make the "
+                      f"conf IPv4-only (no IPv6 in Address, no ::/0 in AllowedIPs)")
     if s4 > 20:
         rep.warn(f"S4 = {s4} is large. Overhead is 60+S4 per packet, so anything "
                  f"above 20 breaks the default 1420 MTU on a 1500-byte path")

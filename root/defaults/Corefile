@@ -3,5 +3,6 @@
     errors
     health
     cache
+    import /config/coredns/generated/*.conf
     forward . /etc/resolv.conf
 }

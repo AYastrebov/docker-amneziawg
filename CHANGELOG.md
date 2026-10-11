@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- IPv6 inside the tunnel, opt-in: with `IP6_SUBNET=auto` peers get a ULA address (derived from `INTERNAL_SUBNET`), closing the dual-stack leak; a `<prefix>::/64` sets your own. Unset or `off` (the default) renders byte-identical output to the previous release and leaves existing templates and Corefile untouched; `IP6_EXIT` (`auto|nat|routed|off`) controls egress; a global prefix auto-selects `routed`, which needs the host to route the prefix on to the container (README "Routed global prefix"). With `enable_ipv6: true` on the Docker network (shipped commented out in `docker-compose.yml`, needs Docker >= 27), IPv6 is masqueraded like IPv4; without it, IPv6 is blocked at the server and CoreDNS returns no AAAA records (refused fast only with `net.ipv6.conf.all.forwarding=1`; without that sysctl the kernel drops it silently). `auto` never picks a mode whose `PostUp` would fail: a container with no IPv6 stack gets no IPv6 address at all, and a host without a usable `ip6table_nat` falls back to `off` with the reason logged. Once enabled, an unmodified `/config/coredns/Corefile` from the previous release gets the `import /config/coredns/generated/*.conf` line automatically; a customised one must add it by hand for AAAA suppression - see README "Upgrading".
+- `root/app/ipv6-lib.sh` with unit tests (`tests/ipv6-lib.test.sh`, run in CI).
+- IPv6 stays off, with the reason logged, when `/config/templates/server.conf` or `peer.conf` pins `MTU` below 1280. The kernel strips IPv6 from an interface whose MTU drops under the IPv6 minimum, so a 1208 template (the right value for a 1280-byte IPv4 path) took the tunnel down with `RTNETLINK answers: No such device` on the first `ip -6 route add` — IPv4 included — and a Linux client with the same peer conf failed identically. Found on a real VPS behind DS-Lite; README "IPv6" documents the floor and what it means for constrained paths
 - `docker-build.yml` now gates the multi-arch build and release behind a `changes` job that diffs the push: only `Dockerfile`, `root/**`, `.dockerignore` and the workflow itself are image content, so docs/skills/compose-only merges to master no longer rebuild and republish `:latest`. Tag pushes, `workflow_dispatch` and diffs with no reachable base always build. Implemented as an explicit `git diff` gate rather than an `on.push.paths` filter, which shares the push block with the `v*` tag trigger and is ambiguous for tag pushes
 - `docs/awg-performance.md`: measured throughput and latency cost of every obfuscation parameter, traced to upstream kernel-module and `amneziawg-go` source, with reproduction steps
 - `README.md` "Speed and latency" section, and data-path cost notes in `CONTEXT.md` and both skill references
@@ -27,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-architecture support (amd64, arm64)
 
 ### Changed
+- Firewall rules in `server.conf` templates are now `${IP6_POSTUP}`/`${IP6_POSTDOWN}` placeholders; user templates are migrated automatically once IPv6 is enabled. `PostUp`/`PostDown` migrate as a pair; a customised pair is left alone and IPv6 stays disabled until the placeholders are added.
+- `Corefile` gains `import /config/coredns/generated/*.conf`.
 - amneziawg-tools updated to v3.0.20260730, the first release with AWG 3.0 config parsing
 - Updated to use GitHub Packages for pre-built images
 

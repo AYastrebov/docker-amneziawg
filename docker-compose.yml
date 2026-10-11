@@ -39,6 +39,15 @@ services:
       # - PERSISTENTKEEPALIVE_PEERS=all     # Which peers get keepalive (all or comma-separated)
       # - LOG_CONFS=true                    # Show QR codes in logs
 
+      # ---- IPv6 (off by default) ----
+      # Opt in to give peers a ULA IPv6 address (derived from INTERNAL_SUBNET) so
+      # dual-stack clients cannot leak IPv6 around the tunnel. For IPv6 egress also
+      # uncomment the forwarding sysctl and the networks block further down.
+      # Templates must keep MTU >= 1280 (IPv6 minimum) or IPv6 stays off.
+      # - IP6_SUBNET=auto                  # auto | <prefix>::/64 | off (default)
+      # - IP6_EXIT=auto                    # auto | nat | routed | off. A global prefix auto-selects routed, which needs
+                                          # the host to route it on to this container - README "Routed global prefix"
+
       # ---- Per-peer server AllowedIPs (site-to-site VPN) ----
       # - SERVER_ALLOWEDIPS_PEER_laptop=192.168.1.0/24
 
@@ -90,8 +99,24 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
-      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv6.conf.all.disable_ipv6=0   # not required for this feature: Docker >= 27 disables IPv6
+                                            # per interface (eth0 only), wg0 is unaffected — see
+                                            # docs/superpowers/specs/2026-08-26-ipv6-support-design.md §3
+      # Uncomment whenever IP6_SUBNET is set, with or without IPv6 egress: with
+      # forwarding off the kernel drops peers' IPv6 silently (connections hang
+      # until timeout) instead of answering with an ICMPv6 error. For egress also
+      # uncomment the networks block at the bottom of this file.
+      # - net.ipv6.conf.all.forwarding=1
     restart: unless-stopped
+
+# IPv6 egress (opt-in): uncomment together with the forwarding sysctl above.
+# Needs IP6_SUBNET set. Docker >= 27 allocates a ULA for this network and does
+# NAT66 itself; without these two an IP6_SUBNET container still gives peers IPv6
+# addresses and rejects their IPv6 traffic, which is what stops a dual-stack
+# client leaking around the VPN.
+# networks:
+#   default:
+#     enable_ipv6: true
 
 # ============================================================================
 # Example: Server Mode with 3 peers

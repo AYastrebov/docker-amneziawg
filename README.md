@@ -17,6 +17,7 @@ AmneziaWG is WireGuard with added traffic obfuscation, so deep packet inspection
 - [Parameters](#parameters)
 - [Protocol version](#protocol-version)
 - [Obfuscation parameters](#obfuscation-parameters)
+- [IPv6](#ipv6)
 - [Custom protocol signatures (I1-I5)](#custom-protocol-signatures-i1-i5)
 - [Custom SERVERPORT](#custom-serverport)
 - [Speed and latency](#speed-and-latency)
@@ -143,7 +144,9 @@ docker run -d \
 | `-e PEERS=3` | Number or comma-separated names (`laptop,phone`). Enables server mode |
 | `-e PEERDNS=auto` | DNS for peers. `auto` = container's CoreDNS at subnet.1 |
 | `-e INTERNAL_SUBNET=10.13.13.0` | VPN subnet (.1 = server, .2+ = peers) |
-| `-e ALLOWEDIPS=0.0.0.0/0, ::/0` | Traffic peers route into the tunnel. The tunnel itself is IPv4-only, so `::/0` is included deliberately: it sinks client IPv6 instead of forwarding it, which prevents IPv6 leaks on dual-stack client networks. Drop `::/0` if you would rather peers keep using their native IPv6 outside the tunnel, or narrow the value to specific subnets for split-tunnel routing |
+| `-e ALLOWEDIPS=0.0.0.0/0, ::/0` | Traffic peers route into the tunnel. Keep `::/0`, but note it only stops IPv6 leaking around the tunnel once `IP6_SUBNET` is set and the peer has imported its regenerated conf: without a tunnel IPv6 address most clients ignore the `::/0` route and use native IPv6. Narrow to specific subnets for split tunnelling |
+| `-e IP6_SUBNET=` | IPv6 inside the tunnel, **off by default**. `auto` = ULA derived from `INTERNAL_SUBNET` (`10.13.13.0` → `fd0a:0d0d:0000::/64`), or your own `<prefix>::/64`. Unset or `off` keeps IPv4-only peers. See [IPv6](#ipv6) |
+| `-e IP6_EXIT=auto` | With IPv6 enabled, what the server does with peers' IPv6 traffic: `auto` (NAT when the container has IPv6, otherwise reject), `nat`, `routed`, `off` |
 | `-e PERSISTENTKEEPALIVE_PEERS=` | Which peers get keepalive: `all` or comma-separated names/numbers |
 | `-e SERVER_ALLOWEDIPS_PEER_X=` | Per-peer server AllowedIPs for site-to-site VPN |
 | `-e LOG_CONFS=true` | Show generated configs and QR codes in container logs |
@@ -251,6 +254,193 @@ To turn a switch back off, set it to `off` rather than removing it — removing 
 > [!NOTE]
 > Earlier versions of this image did not generate these keys, so the documented workaround was to add them by hand to `/config/templates/server.conf` and `/config/templates/peer.conf`. If you did that, remove the hand-added lines and set the env vars instead — otherwise the key is written twice.
 
+## IPv6
+
+IPv6 is **off by default**. Without it the container behaves exactly as
+earlier releases did: peers get IPv4 addresses only, and with the current
+default template any IPv6 they send into the tunnel (via `::/0` in
+`ALLOWEDIPS`) is dropped at the server. Existing installations are not touched
+on upgrade: templates and Corefile stay as they are until you opt in. That
+also means a user-owned template from an older release keeps whatever
+`ip6tables` rules it already has; the original template forwarded and
+masqueraded IPv6 rather than dropping it, and it goes on doing exactly that
+until you set `IP6_SUBNET`, at which point it is migrated.
+
+Set `IP6_SUBNET=auto` to opt in. Every peer then gets an IPv6 address inside
+the tunnel (a ULA derived from `INTERNAL_SUBNET`), so dual-stack clients route
+**all** their IPv6 into the tunnel and stop leaking it around the VPN. What
+happens to that traffic at the server depends on three conditions: the IPv6
+stack enabled, a default route, and `net.ipv6.conf.all.forwarding=1`:
+
+| container state | `IP6_EXIT=auto` resolves to | peers experience |
+|---|---|---|
+| no IPv6 stack (host booted with `ipv6.disable=1`, or `net.ipv6.conf.all/default.disable_ipv6=1`) | IPv6 stays disabled and no IPv6 address is handed out — same output as `IP6_SUBNET=off` | IPv4-only |
+| no `ip6table_filter` module | IPv6 stays disabled and no IPv6 address is handed out — nothing could block peers' IPv6, so none is offered; same output as `IP6_SUBNET=off` | IPv4-only; dual-stack clients keep using native IPv6, as before the feature |
+| stack and `forwarding=1`, but no route / no `ip6table_nat` / no `MASQUERADE` target (default Docker network) | `off` — traffic is refused with ICMPv6, and the built-in DNS returns no AAAA records | IPv4-only, no leak, no hangs |
+| `net.ipv6.conf.all.forwarding=0` (the sysctl is not set) | `off` — the kernel drops peers' IPv6 **silently**, before any firewall rule sees it; the built-in DNS returns no AAAA records | IPv4-only, no leak; IPv6 connections that bypass the built-in DNS hang until timeout |
+| all three, ULA prefix (`IP6_SUBNET=auto`) | `nat` — masqueraded out of the interface the IPv6 default route uses, like IPv4 | full IPv6 |
+| all three, global prefix set via `IP6_SUBNET` | `routed` — forwarded unmasqueraded. The container cannot check that the `/64` actually reaches it; see [Routed global prefix](#routed-global-prefix) | full IPv6, once the return route exists |
+
+**Set `net.ipv6.conf.all.forwarding=1` whenever you set `IP6_SUBNET`**, even
+without IPv6 egress. It is the difference between the last two `off` rows:
+with it, peers that try IPv6 get an immediate error and fall back to IPv4;
+without it, only peers using the built-in DNS (`PEERDNS=auto`) avoid the hang.
+
+### Enable IPv6 egress
+
+`IP6_SUBNET=auto` plus two lines in `docker-compose.yml`; nothing on the
+Docker daemon, nothing on other containers (Docker ≥ 27 allocates a ULA and
+does NAT66 itself). All three ship commented out in this repo's
+`docker-compose.yml` — uncomment them:
+
+```yaml
+services:
+  amneziawg:
+    environment:
+      - IP6_SUBNET=auto
+    sysctls:
+      - net.ipv6.conf.all.forwarding=1   # add to the existing block
+networks:
+  default:
+    enable_ipv6: true
+```
+
+Then `docker compose up -d` and check the log for `IPv6 exit: nat`. Enabling
+IPv6 changes every peer conf (it gains an IPv6 `Address`), so re-import them;
+turning on egress later changes only the server's firewall rules. `enable_ipv6`
+needs Docker ≥ 27 — on older Docker `docker compose up` fails while creating
+the network, which is why the lines are shipped commented out.
+
+### Routed global prefix
+
+`IP6_SUBNET=<global prefix>::/64` makes `auto` pick `routed`: the two `ACCEPT`
+rules and no NAT. The container only forwards. The return path has to exist
+outside it, nothing in this repo sets it up, and the startup log cannot verify
+it — `IPv6 exit: routed` means the rules were written, not that the prefix is
+reachable. You need all three:
+
+1. Your provider must **route** the `/64` to the host. The on-link `/64` most
+   VPSes attach to the NIC is not routed; using it would need NDP proxying,
+   which is out of scope.
+2. On the default bridge network the host must route the `/64` on to the
+   container, or replies never reach `wg0`. Give the container a fixed address
+   (`enable_ipv6: true` on the network plus `ipv6_address:` on the service)
+   and add a route on the host, persisted in its network configuration:
+
+   ```bash
+   ip -6 route add <prefix>::/64 via <container's fixed IPv6 address>
+   ```
+
+   With `network_mode: host`, `wg0` lives in the host's namespace and this
+   step disappears.
+3. `net.ipv6.conf.all.forwarding=1` in the container (compose `sysctls:`) and
+   on the host (`sysctl net.ipv6.conf.all.forwarding`).
+
+To test, ping a peer's tunnel address from the host (`ping -6 <prefix>::2`)
+while that peer is connected. If the host cannot reach it, step 2 is missing;
+if the host can but the Internet cannot, step 1 is. When in doubt, use
+`IP6_SUBNET=auto`: ULA plus NAT66 works on any host with IPv6 egress and
+needs none of the above.
+
+### MTU floor
+
+IPv6 needs an interface MTU of at least 1280, and Linux enforces it the hard
+way: the moment `awg-quick` sets `wg0` to anything smaller, the kernel removes
+the IPv6 address it just added, and the next `ip -6 route add` fails with
+`RTNETLINK answers: No such device` — which under `set -e` takes the whole
+tunnel down, IPv4 included. A peer conf with `MTU` under 1280 does the same on
+a Linux client, and Windows refuses the address outright.
+
+So once `IP6_SUBNET` is set, **`MTU = 1280` is a hard floor in both
+`/config/templates/server.conf` and `peer.conf`**. The container checks this
+at startup: if either template pins a smaller value, IPv6 stays off (exactly
+as `IP6_SUBNET=off`), the log names the file and the value, and the tunnel
+comes up IPv4-only. Raise the MTU or drop the line, restart, and the confs are
+regenerated with IPv6.
+
+This collides with the [MTU](#mtu) advice for constrained paths. A client
+behind a 1280-byte IPv4 path (DS-Lite is the common case: the IPv4 path MTU
+is exactly 1280) needs a tunnel MTU of `1280 − 60 − S4` = 1208 over an IPv4
+endpoint, and 1208 cannot carry IPv6. That client has two options, both
+verified on such a path:
+
+- **Stay IPv4-only**: delete the IPv6 address from its `Address` line and
+  `::/0` from `AllowedIPs`, keep `MTU = 1208`. Full speed, no in-tunnel IPv6
+  (and the dual-stack leak stays open on that device).
+- **Use the IPv6 endpoint**: Docker publishes the port on `[::]` too, so
+  `Endpoint = [<host IPv6>]:<port>` works when the host has a global address
+  (the IPv6 `DOCKER-USER` chain is normally empty, so no extra firewall
+  entry). The native IPv6 path is usually 1492 or 1500, which allows an MTU
+  up to `path − 80 − S4` (1400 on PPPoE) with IPv6 inside. Mind the PMTU
+  trap under [Troubleshooting](#troubleshooting) before raising a peer above
+  the server's MTU.
+
+Peers on ordinary 1500-byte paths (mobile, most wired) are unaffected: 1280
+on both ends is the recommended value anyway.
+
+### Options
+
+- `IP6_SUBNET=auto` — enable IPv6 with a ULA prefix derived from `INTERNAL_SUBNET`.
+- `IP6_SUBNET=fd12:3456:789a::/64` — enable IPv6 with your own prefix. A global (non-`fd`)
+  prefix makes `auto` choose `routed` (no NAT): use it only when that `/64` is
+  routed to the host *and on to the container*, see
+  [Routed global prefix](#routed-global-prefix).
+- `IP6_SUBNET=off` (or unset, the default) — no IPv6 addresses; the server
+  drops peers' IPv6 with the same two `ip6tables ... -j DROP` rules earlier
+  releases hard-coded. On a host without the `ip6table_filter` module those
+  rules are skipped rather than failing `PostUp`.
+- `IP6_EXIT=nat|routed|off` — with IPv6 enabled, override auto-detection. A forced mode is used
+  verbatim: forcing `nat` on a host without an IPv6 route or without the
+  `ip6table_nat` kernel module makes `PostUp` fail and the tunnel will not
+  come up; the error is in the log. `auto` checks for both before it picks
+  `nat`, so it never puts you there.
+
+The outer endpoint (the UDP port clients connect to) stays IPv4. Docker
+publishes it on `[::]` too, so a hostname with an AAAA record also works, but
+`SERVERURL=auto` always picks the IPv4 address.
+
+### Upgrading
+
+Nothing changes on upgrade while IPv6 stays off. The steps below apply when you
+set `IP6_SUBNET` on an existing installation.
+
+Existing peer configs keep working, but a device is protected from the IPv6
+leak only once you re-import its regenerated conf (`/app/show-peer <name>`):
+the leak is closed by the peer *having* an IPv6 address, and that lives in the
+client's conf, not on the server.
+
+Templates in `/config/templates/` are migrated automatically (the old
+hard-coded `ip6tables` rules are replaced by `${IP6_POSTUP}` placeholders).
+`PostUp` and `PostDown` are migrated together or not at all: if you customised
+either one, both are left alone, the log says so, and **IPv6 stays disabled**
+(as with `IP6_SUBNET=off`) until you add the `${IP6_POSTUP}`/`${IP6_POSTDOWN}`
+placeholders shown in `root/defaults/server.conf` yourself. A customised
+`Address` line is left alone with a warning.
+
+`/config/coredns/Corefile` is migrated automatically too, but only when it is
+the unmodified default of the previous release. If you edited it, add this
+line inside the server block yourself (the startup log reminds you when it is
+missing):
+
+```
+import /config/coredns/generated/*.conf
+```
+
+and restart. It is what activates AAAA suppression, so that peers using
+`PEERDNS=auto` never even try IPv6 while the exit is `off`.
+
+Skipping it is not a leak: IPv6 is still rejected at the server's firewall.
+The only cost is latency — a client gets an AAAA record, tries IPv6, gets an
+ICMPv6 reject and falls back to IPv4, instead of never trying.
+
+### Troubleshooting
+
+- **`ip6tables: ... No chain/target/match by that name` in the log and the tunnel does not start** — the host lacks an IPv6 netfilter module (`ip6table_nat`, `ip6table_filter` or `ip6t_REJECT`). `IP6_EXIT=auto` probes the nat table, the MASQUERADE target and the REJECT target and never picks a mode that needs a missing one; `off` degrades to DROP when REJECT is missing; and without the filter table IPv6 is disabled outright, all with the reason in the log, so with `auto` or `off` this does not happen. A forced `IP6_EXIT=nat` or `routed` is honoured verbatim and will fail here — that is deliberate. Drop the forced mode, or set `IP6_SUBNET=off`.
+- **`IPv6 exit: routed` in the log, peers get an IPv6 address, but their IPv6 never works** — the prefix does not reach `wg0`. `routed` only writes two `ACCEPT` rules; it cannot check that your provider routes the `/64` to the host or that the host routes it on to the container (the default bridge network needs an explicit route). Work through [Routed global prefix](#routed-global-prefix), or switch to `IP6_SUBNET=auto` for ULA + NAT66.
+- **IPv6 sites hang on peers** — the exit is `off` and `net.ipv6.conf.all.forwarding=1` is not set, so the kernel drops IPv6 silently instead of refusing it. Add the sysctl (see [IPv6](#ipv6)). Peers using the container's DNS (`PEERDNS=auto`) are mostly spared because they get no AAAA records; a peer with a public resolver, or one dialling an IPv6 literal, is not. Enabling IPv6 egress also fixes it.
+- **Tunnel fails right after `ip link set mtu NNNN up` with `RTNETLINK answers: No such device` on an `ip -6 route add`** — the MTU is below 1280 (see [MTU floor](#mtu-floor)). The container refuses to hand out IPv6 while a template pins such a value, so this is only reachable with a hand-edited generated conf, or on a client whose conf was lowered after export. Raise the MTU to 1280, or strip the IPv6 address and `::/0` from that conf.
+- **One peer's upload collapses to under 1 Mbit/s for ten minutes at a time, download is fine, and it started after that peer ran a speed test against the server host** — a PMTU cache trap on the server, confirmed with `tcpdump`. The peer's tunnel MTU is above the server's `wg0` MTU (1280). A large packet the *host itself* sends to that peer (an iperf3 server on the host, a download served by the host) exceeds `wg0`, the container answers "packet too big, mtu 1280", and the host caches that against the container's bridge address — the same address the inbound AWG port is DNAT'd to. The host then bounces every inbound AWG datagram over 1280 bytes with the same ICMP until the entry expires (`ip -6 route show cache`, `ip route get <container ip>`). It cannot happen while peer MTU ≤ server MTU, since TCP MSS keeps the host's packets within `wg0`. Keep peers at or below the server's MTU, or add TCP MSS clamping to the server template if you must raise one.
+
 ## Custom protocol signatures (I1-I5)
 
 AWG 2.0 sends signature packets before the handshake to make VPN traffic look like some other UDP protocol. I1 defaults to a QUIC Initial packet (RFC 9000).
@@ -342,7 +532,7 @@ Be precise about what the "IPv6 minimum" argument guarantees, though: the 1280-b
 | Situation | Tunnel MTU | Why |
 |-----------|-----------:|-----|
 | Mobile clients, PPPoE, unknown paths, anything that "works but is slow" | **1280** | Clears every ordinary path (needs path MTU ≥ `1340 + S4` on the wire for an IPv4 endpoint, `1360 + S4` for IPv6); the cost is a ~10% higher header-to-payload ratio, which is nothing next to fragmentation loss |
-| Path that is itself constrained to ~1280 (DS-Lite, tunnel-in-tunnel, some LTE) | `path − 60 − S4` (IPv4) / `path − 80 − S4` (IPv6) | The outer packet must fit the *path*, not the IPv6 floor: at `S4 = 12` a 1280-byte path needs tunnel MTU **1208** (IPv4 endpoint) or **1188** (IPv6). Measure with a `ping -M do` binary search |
+| Path that is itself constrained to ~1280 (DS-Lite, tunnel-in-tunnel, some LTE) | `path − 60 − S4` (IPv4) / `path − 80 − S4` (IPv6) | The outer packet must fit the *path*, not the IPv6 floor: at `S4 = 12` a 1280-byte path needs tunnel MTU **1208** (IPv4 endpoint) or **1188** (IPv6). Measure with a `ping -M do` binary search. Both values are below 1280, so such a peer cannot carry IPv6 inside the tunnel — see [MTU floor](#mtu-floor) |
 | Wired clients on a clean 1500-byte path, IPv4 endpoint | 1400-1413 | `1500 − 20 − 8 − 32 − S4`. 1413 is the ceiling for the largest default `S4` (27), 1408 for the hard maximum (32); 1400 also survives one extra 8-byte encapsulation |
 | IPv6 endpoint on a 1500-byte path | 1380-1393 | `1500 − 40 − 8 − 32 − S4`: 1393 for `S4 = 27`, 1388 for `S4 = 32` |
 | You have set `AWG_S4` yourself | `path − 60 (IPv4) / 80 (IPv6) − S4` | Recompute when you change `S4` |
@@ -360,6 +550,8 @@ For an existing deployment, add an `MTU` line to the `[Interface]` section of th
 Address = ...
 MTU = 1280
 ```
+
+With `IP6_SUBNET` set, neither template may go below 1280 — the container keeps IPv6 off and says so if one does ([MTU floor](#mtu-floor)).
 
 Set it on both the server conf (`/config/wg_confs/wg0.conf`) and every peer conf (`/config/peerN/peerN.conf`, then re-import on the device — QR codes and `.conf` files are regenerated from the templates only, so hand-edited peer confs must be re-distributed). The two sides do not have to agree — each side's MTU only limits what *it* sends — but a peer left at 1420 still fragments its uploads. The AmneziaVPN app exposes MTU in the connection settings; on Windows the WinTUN adapter ignores the config value and uses 1280 regardless.
 

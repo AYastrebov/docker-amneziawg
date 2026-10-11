@@ -86,6 +86,8 @@ Ask the user for these settings. Group related questions to minimize back-and-fo
 | VPN subnet | `INTERNAL_SUBNET` | `10.13.13.0` | Change if `10.13.13.0/24` conflicts with the user's LAN. |
 | Peer DNS | `PEERDNS` | `auto` (container's CoreDNS) | Override to `1.1.1.1, 8.8.8.8` if the user wants public resolvers. |
 | Allowed IPs | `ALLOWEDIPS` | `0.0.0.0/0, ::/0` | Restrict to specific subnets for split-tunnel. |
+| IPv6 | `IP6_SUBNET` | unset (off) | Opt-in. Ask whether peers should get IPv6: `auto` (ULA derived from `INTERNAL_SUBNET`) closes the dual-stack leak; a custom `<prefix>::/64` only if the user has a global prefix that is **routed** to the host (not the on-link `/64` most VPSes have) and is willing to add a host route for it on to the container — README "Routed global prefix". The container cannot verify either, so when in doubt use `auto`. Unset keeps peers IPv4-only. **Templates must keep `MTU` at 1280 or above** (or no MTU line): the kernel strips IPv6 from a smaller interface, so the container keeps IPv6 off and logs the file if either template pins less. A peer that needs a sub-1280 MTU (1208 on a DS-Lite / ~1280-byte path) therefore cannot carry IPv6 over the IPv4 endpoint — tell such users to stay IPv4-only or dial the host's IPv6 address, where MTU 1400 works. |
+| IPv6 egress | `IP6_EXIT` | `auto` | Only with `IP6_SUBNET` set. `auto` NATs peers' IPv6 out when the host has IPv6 (see the requirements-phase check) and otherwise blocks it — no leak either way. Blocking is a fast ICMPv6 refusal only with the `net.ipv6.conf.all.forwarding=1` sysctl, so uncomment it whenever `IP6_SUBNET` is set. |
 | Persistent keepalive | `PERSISTENTKEEPALIVE_PEERS` | unset | Set to `all` for mobile peers behind NAT. |
 | Per-peer site-to-site routes | `SERVER_ALLOWEDIPS_PEER_X` | unset | For routing back to a peer's LAN subnet. |
 | Log configs | `LOG_CONFS` | `true` | Keep `true` initially to see QR codes; can disable later. |
@@ -164,6 +166,7 @@ If the user picks "generate now", explain: server and **every** client must use 
    - `[init-amneziawg-confs] Generating configs...` — config generation OK
    - `[ls.io-init] done.` — s6 init complete
    - `[svc-amneziawg] Activating tunnel wg0...` — tunnel up
+   - With `IP6_SUBNET` set: `IPv6 tunnel prefix is …` and `IPv6 exit: nat|routed|off (…)`. An `IPv6 is disabled because …` line names the reason (no IPv6 stack, missing `ip6table_filter`, a customised `PostUp`, or a template `MTU` below 1280) — IPv4 still works, but fix the reason before handing out confs or every peer will need a second import.
    - **Errors to catch**: missing `/dev/net/tun`, port already in use, "Cannot find device wg0", sysctl write failures.
 7. Verify with `docker exec amneziawg awg show` — should list peers.
 
@@ -191,7 +194,7 @@ Tell the user:
 Quick smoke test from a client:
 1. Import the config into AmneziaVPN.
 2. Connect. Tunnel should come up within a few seconds.
-3. `curl https://api.ipify.org` from the client device → should show the VPS's public IP.
+3. `curl https://api.ipify.org` from the client device → should show the VPS's public IP. With `IP6_SUBNET` set and `IPv6 exit: nat`, also `curl -6 https://api64.ipify.org` → the VPS's IPv6 address (and `dig AAAA google.com` through the tunnel DNS returns records).
 4. On the server: `docker exec amneziawg awg show` → endpoint and last-handshake timestamps should appear.
 
 If the handshake never completes:

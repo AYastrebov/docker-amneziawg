@@ -196,7 +196,9 @@ H4 = 1669322812-1719322812
 I1 = <b 0xc3><b 0x00000001><b 0x08><r 8><b 0x00><b 0x00><b 0x449e><r 4><r 1178>
 HeaderProtectionKey = <32 random bytes, base64>
 RandomTrailers = on
-MTU = 1280       # or path MTU − 60 − S4; awg-quick's 1420 ignores S4
+MTU = 1280       # or path MTU − 60 − S4; awg-quick's 1420 ignores S4.
+                 # Hard floor once IP6_SUBNET is set: below 1280 the kernel
+                 # strips IPv6 from the interface and the tunnel fails
 # ContentPaddingAddition deliberately NOT set
 # DisableCookies deliberately NOT set — it costs nothing in throughput and
 # gives up WireGuard's DoS mitigation, so enable it only for DPI reasons
@@ -204,7 +206,10 @@ MTU = 1280       # or path MTU − 60 − S4; awg-quick's 1420 ignores S4
 
 `MTU` is per-endpoint and does not have to match. 1280 assumes a 1500-byte path;
 a client that is itself behind a 1280-byte path needs `1280 − 60 − S4` = 1208
-instead, so measure rather than assume — see [MTU](#mtu) above.
+instead, so measure rather than assume — see [MTU](#mtu) above. 1208 rules out
+IPv6 inside the tunnel for that client (README "IPv6 › MTU floor"); it can
+reach the server over an IPv6 endpoint instead, where the path is normally
+1492 and `path − 80 − S4` = 1400 applies.
 
 Cost against plain WireGuard: **−1% upload, −5% download, +0.3ms RTT.**
 

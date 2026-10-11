@@ -64,6 +64,13 @@ kver=$(uname -r)
 # IPv4 reachable? Amnezia upstream considers IPv6-only hosts unsupported.
 ip -4 route get 1.1.1.1 &>/dev/null || warn "Host appears to have no IPv4 default route — AmneziaWG over IPv6-only is not officially supported"
 
+# IPv6 (opt-in, IP6_SUBNET): only relevant if the user wants peers to have IPv6 inside
+# the tunnel. The container decides the exit mode itself at startup; this check just
+# tells us whether "full IPv6 egress" is on the table or whether an opted-in deployment
+# will block peers' IPv6 (addresses assigned, traffic refused, no AAAA from the built-in DNS).
+ip -6 route get 2001:4860:4860::8888 &>/dev/null && ok "Host has IPv6 egress — with IP6_SUBNET set, peers can get IPv6 via NAT66" || warn "No IPv6 egress on host — with IP6_SUBNET set, peers get an IPv6 address but their IPv6 is blocked at the server (no leak); without it, peers are IPv4-only"
+docker version --format '{{.Server.Version}}' 2>/dev/null | awk -F. '{exit ($1>=27)?0:1}' && ok "Docker >= 27: enable_ipv6 does NAT66 natively" || warn "Docker < 27: set \"ip6tables\": true in daemon.json before enabling IPv6 on the network"
+
 # Optional: AmneziaWG kernel module
 # Check if available (don't require — userspace fallback works)
 if lsmod | grep -q amneziawg || modinfo amneziawg &>/dev/null; then
