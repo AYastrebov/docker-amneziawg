@@ -257,10 +257,14 @@ To turn a switch back off, set it to `off` rather than removing it — removing 
 ## IPv6
 
 IPv6 is **off by default**. Without it the container behaves exactly as
-earlier releases did: peers get IPv4 addresses only, and IPv6 they send into
-the tunnel (via `::/0` in `ALLOWEDIPS`) is dropped at the server. Existing
-installations are not touched on upgrade — templates and Corefile stay as they
-are until you opt in.
+earlier releases did: peers get IPv4 addresses only, and with the current
+default template any IPv6 they send into the tunnel (via `::/0` in
+`ALLOWEDIPS`) is dropped at the server. Existing installations are not touched
+on upgrade: templates and Corefile stay as they are until you opt in. That
+also means a user-owned template from an older release keeps whatever
+`ip6tables` rules it already has; the original template forwarded and
+masqueraded IPv6 rather than dropping it, and it goes on doing exactly that
+until you set `IP6_SUBNET`, at which point it is migrated.
 
 Set `IP6_SUBNET=auto` to opt in. Every peer then gets an IPv6 address inside
 the tunnel (a ULA derived from `INTERNAL_SUBNET`), so dual-stack clients route

@@ -96,7 +96,8 @@ jobs:
         run: bash tests/ipv6-lib.test.sh
 
   build:
-    needs: changes
+    # unit-tests gates the image too: a red ipv6-lib test must never reach :latest
+    needs: [changes, unit-tests]
     if: needs.changes.outputs.image == 'true'
     runs-on: ubuntu-latest
     permissions:
