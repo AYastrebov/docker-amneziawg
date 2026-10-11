@@ -236,6 +236,10 @@ jobs:
             test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-module/dependencies.d/init-config && echo "module depends on init-config: OK"
             test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/dependencies.d/init-amneziawg-module && echo "confs depends on module: OK"
             test -f /etc/s6-overlay/s6-rc.d/svc-coredns/dependencies.d/init-services && echo "coredns depends on init-services: OK"
+            # Without this CoreDNS can start before the Corefile is written and
+            # fall back to its built-in whoami config (empty answers to every query)
+            test -f /etc/s6-overlay/s6-rc.d/svc-coredns/dependencies.d/init-amneziawg-confs && echo "coredns depends on confs: OK" \
+              || { echo "svc-coredns must depend on init-amneziawg-confs"; exit 1; }
             test -f /etc/s6-overlay/s6-rc.d/svc-amneziawg/dependencies.d/svc-coredns && echo "amneziawg depends on coredns: OK"
           '
           echo "- Dependency chain correct" >> "$GITHUB_STEP_SUMMARY"
