@@ -16,6 +16,7 @@ work" reports are a shared value drifting between the two, which is only visible
 | **Upload collapses (~2 Mbit/s), download nearly fine** | `RandomTrailers = on` with unequal `S1`-`S4`. ~3.5% of data packets misclassified and dropped |
 | **Download ~20-25% below expectations, upload fine** | `ContentPaddingAddition` set. Randomized datagram lengths defeat `UDP_GRO` batching |
 | **Handshake succeeds, pings fine, downloads crawl** | MTU. `S4 > 20` at the default 1420 fragments every full-size packet |
+| **Tunnel never comes up; log shows `RTNETLINK answers: No such device` on an `ip -6 route add` right after `ip link set mtu`** | `MTU < 1280` in a conf that has an IPv6 address or `::/0`. The kernel stripped the IPv6 address when the MTU was set. Raise to 1280 or make the conf IPv4-only |
 | **Tunnel never comes up at all** | A shared value differs between ends (`S`/`H`/`I`/`HeaderProtectionKey`/`RandomTrailers`), or the endpoint software is too old for a key in the config |
 | **`Unable to modify interface: Invalid argument`** | Kernel module older than the parameters used. Check `cat /sys/module/amneziawg/version` |
 | **`Line unrecognized: `I2='`** | An `I2`-`I5` key present with an empty value. `awg` rejects empty values, so the config will not load under `awg-quick` even though a GUI client may accept it. Delete the line rather than leaving it blank |
@@ -54,6 +55,11 @@ Then check the config fits: a full-size packet is `MTU + 60 + S4` on IPv4. If th
 measured path MTU, lower the tunnel `MTU` to `path − 60 − S4` (IPv4 endpoint) or
 `path − 80 − S4` (IPv6) — 1280 only when the measured path is ordinary (≥ ~1400); a path that is
 itself 1280 needs 1208/1188 — or lower `S4`.
+
+Before going under 1280, check the conf for IPv6: an `Address` with an IPv6 entry or `::/0` in
+`AllowedIPs` pins the floor at 1280 (the kernel strips IPv6 from a smaller interface and
+`awg-quick` then fails on `ip -6 route add` with `No such device`). Either remove the IPv6
+parts and use 1208, or keep IPv6 and dial an IPv6 endpoint, whose path is normally 1492.
 
 Paths are frequently smaller than 1500 — PPPoE is 1492, LTE is often ≤1400, and DS-Lite or other
 tunnelled access can land at 1280. The server usually has a clean 1500 and cannot know this, so

@@ -20,6 +20,9 @@
 #   --dns IP[,IP]               DNS for peers                    (default 1.1.1.1,1.0.0.1)
 #   --allowed-ips CIDR[,CIDR]   Peer AllowedIPs                  (default 0.0.0.0/0)
 #   --mtu N                     Tunnel MTU                       (default 1280)
+#                               Below 1280 is only valid in an IPv4-only conf:
+#                               with an IPv6 entry in --allowed-ips the kernel
+#                               strips IPv6 from the interface and awg-quick fails.
 #   --outdir DIR                Where to write configs           (default ./awg-configs)
 #   --nat-iface IFACE           Emit PostUp/PostDown masquerade rules for IFACE.
 #                               Without it the rules are written commented out,
@@ -128,6 +131,16 @@ fi
 if [ "$params_only" = 0 ] && [ -z "$endpoint" ]; then
     die "--endpoint HOST:PORT is required (or use --params-only)"
 fi
+
+case "$mtu" in ''|*[!0-9]*) die "--mtu must be numeric (got '$mtu')" ;; esac
+# Linux removes IPv6 from an interface whose MTU is under 1280, and awg-quick
+# then fails on 'ip -6 route add' with "No such device" and takes the tunnel
+# down. The confs written here are IPv4-only inside the tunnel, so this only
+# bites when --allowed-ips routes IPv6 through it.
+case "$allowed_ips" in
+    *:*) [ "$mtu" -ge 1280 ] || die "--mtu $mtu is below 1280 but --allowed-ips '$allowed_ips' routes IPv6 through the tunnel.
+       A Linux peer would fail on 'ip -6 route add' (No such device). Use --mtu 1280 or higher, or drop the IPv6 range." ;;
+esac
 
 # Split HOST:PORT. A bare host writes an Endpoint that awg-quick rejects, and a
 # bare IPv6 address is worse: "${endpoint##*:}" would silently yield the last

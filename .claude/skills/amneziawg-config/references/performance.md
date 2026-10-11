@@ -174,7 +174,8 @@ S4 = 12          # HeaderProtectionKey floor; <= 20 keeps MTU 1420 safe
 HeaderProtectionKey = <32 random bytes, base64>
 RandomTrailers = on
 # ContentPaddingAddition deliberately not set
-MTU = 1280
+MTU = 1280       # a hard floor if the conf carries an IPv6 address or ::/0;
+                 # path − 60 − S4 (1208) only in an IPv4-only conf
 ```
 
 Cost against plain WireGuard: **−1% upload, −5% download, +0.3ms RTT.**

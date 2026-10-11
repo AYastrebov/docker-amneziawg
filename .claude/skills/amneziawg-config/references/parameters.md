@@ -187,6 +187,13 @@ tunnel-in-tunnel) needs `path − 60 − S4` for an IPv4 endpoint (1208 at `S4 =
 `path − 80 − S4` for IPv6 (1188), or full-size packets still fragment — the IPv4 case verified by
 capture on exactly such a path. Below that, lower values only add overhead.
 
+Those sub-1280 values are legal **only in an IPv4-only conf**. An interface whose MTU is under
+1280 cannot hold an IPv6 address on Linux: the kernel strips it, `awg-quick`'s following
+`ip -6 route add` fails with `No such device`, and the tunnel does not come up at all. If
+`Address` has an IPv6 entry or `AllowedIPs` has `::/0`, 1280 is the floor — a constrained-path
+peer then either drops IPv6 from its conf or dials an IPv6 endpoint (path usually 1492, so
+`1492 − 80 − S4` = 1400 at `S4 = 12`).
+
 ## Version detection
 
 Given an unlabelled config, infer the version:
@@ -258,6 +265,8 @@ Run `scripts/awg-lint.py` rather than checking by hand, but for reference:
 - `ContentPaddingAddition = 0` unless deliberately wanted, never with `RandomTrailers`
 - `RejectAfterTime.lo >` both `RekeyAfterTime.hi` and `KeepaliveTimeout.lo + RekeyTimeout.lo`
 - Explicit `MTU`, `≤ 1500 − 60 − S4` on IPv4
+- `MTU ≥ 1280` whenever `Address` or `AllowedIPs` contains an IPv6 entry (kernel floor; the
+  tunnel fails below it)
 
 ## Sources
 

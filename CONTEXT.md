@@ -201,6 +201,8 @@ The cap is the **observed UDP window, not the MTU** (`peer.h:110-124`), and the 
 
 Guidance (documented in README "MTU"): 1280 for mobile/PPPoE/unknown paths (clears any path with MTU >= `1340 + S4` on the wire for IPv4 endpoints, `1360 + S4` for IPv6; a path that is *itself* ~1280, e.g. DS-Lite, needs `path − 60 − S4` = 1208 at S4=12 over IPv4, `path − 80 − S4` = 1188 over IPv6 — the IPv6 1280 floor guarantees the *outer* packet, not the tunnel MTU); `1500 − 60 − S4` (1413 for the default max S4 = 27) for wired IPv4; `1500 − 80 − S4` for IPv6 endpoints. The container does not write `MTU`; users add it to the confs or templates. Sources: amneziawg-go `device/send.go`, `device/constants.go`; wiki.amnezia.host 3.1 upgrade guide; bivlked/amneziawg-installer ADVANCED.md (sets 1280 since v5.7.4); Any-Tech-ARCHITECT `scripts/awg-gen.sh` (parameter ranges, no MTU guidance).
 
+With `IP6_SUBNET` set, 1280 is also a hard floor: Linux strips IPv6 from an interface whose MTU is under 1280, so a template below it would take the tunnel down on `ip -6 route add` ("No such device"). `ip6_check_template_mtu` in `root/app/ipv6-lib.sh` keeps IPv6 off, with the file named in the log, when either template pins less — the constrained-path values (1208/1188) are IPv4-only territory. README "IPv6 › MTU floor".
+
 ## CI/CD
 
 ### docker-build.yml
