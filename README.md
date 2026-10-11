@@ -275,7 +275,8 @@ stack enabled, a default route, and `net.ipv6.conf.all.forwarding=1`:
 | container state | `IP6_EXIT=auto` resolves to | peers experience |
 |---|---|---|
 | no IPv6 stack (host booted with `ipv6.disable=1`, or `net.ipv6.conf.all/default.disable_ipv6=1`) | IPv6 stays disabled and no IPv6 address is handed out — same output as `IP6_SUBNET=off` | IPv4-only |
-| stack and `forwarding=1`, but no route / no `ip6table_nat` / no `ip6table_filter` (default Docker network) | `off` — traffic is refused with ICMPv6, and the built-in DNS returns no AAAA records | IPv4-only, no leak, no hangs |
+| no `ip6table_filter` module | IPv6 stays disabled and no IPv6 address is handed out — nothing could block peers' IPv6, so none is offered; same output as `IP6_SUBNET=off` | IPv4-only; dual-stack clients keep using native IPv6, as before the feature |
+| stack and `forwarding=1`, but no route / no `ip6table_nat` / no `MASQUERADE` target (default Docker network) | `off` — traffic is refused with ICMPv6, and the built-in DNS returns no AAAA records | IPv4-only, no leak, no hangs |
 | `net.ipv6.conf.all.forwarding=0` (the sysctl is not set) | `off` — the kernel drops peers' IPv6 **silently**, before any firewall rule sees it; the built-in DNS returns no AAAA records | IPv4-only, no leak; IPv6 connections that bypass the built-in DNS hang until timeout |
 | all three, ULA prefix (`IP6_SUBNET=auto`) | `nat` — masqueraded out of the interface the IPv6 default route uses, like IPv4 | full IPv6 |
 | all three, global prefix set via `IP6_SUBNET` | `routed` — forwarded unmasqueraded; that `/64` must be routed to this host | full IPv6 |
@@ -366,7 +367,7 @@ ICMPv6 reject and falls back to IPv4, instead of never trying.
 
 ### Troubleshooting
 
-- **`ip6tables: ... No chain/target/match by that name` in the log and the tunnel does not start** — the host lacks an IPv6 netfilter module (`ip6table_nat`, `ip6table_filter` or `ip6t_REJECT`). `IP6_EXIT=auto` probes all three and never picks a mode that needs a missing one, and `off` degrades on its own — REJECT, else DROP, else no rules — with the reason in the log, so with `auto` or `off` this does not happen. A forced `IP6_EXIT=nat` or `routed` is honoured verbatim and will fail here — that is deliberate. Drop the forced mode, or set `IP6_SUBNET=off`.
+- **`ip6tables: ... No chain/target/match by that name` in the log and the tunnel does not start** — the host lacks an IPv6 netfilter module (`ip6table_nat`, `ip6table_filter` or `ip6t_REJECT`). `IP6_EXIT=auto` probes the nat table, the MASQUERADE target and the REJECT target and never picks a mode that needs a missing one; `off` degrades to DROP when REJECT is missing; and without the filter table IPv6 is disabled outright, all with the reason in the log, so with `auto` or `off` this does not happen. A forced `IP6_EXIT=nat` or `routed` is honoured verbatim and will fail here — that is deliberate. Drop the forced mode, or set `IP6_SUBNET=off`.
 - **IPv6 sites hang on peers** — the exit is `off` and `net.ipv6.conf.all.forwarding=1` is not set, so the kernel drops IPv6 silently instead of refusing it. Add the sysctl (see [IPv6](#ipv6)). Peers using the container's DNS (`PEERDNS=auto`) are mostly spared because they get no AAAA records; a peer with a public resolver, or one dialling an IPv6 literal, is not. Enabling IPv6 egress also fixes it.
 
 ## Custom protocol signatures (I1-I5)

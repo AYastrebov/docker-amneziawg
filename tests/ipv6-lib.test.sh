@@ -96,6 +96,7 @@ assert_eq "" "$(conf_addr 'Address = fd0a:0d0d:0000::2/128')" "read-back: v6 onl
 # the defaults describe a host with a full IPv6 stack.
 # Keep the real REJECT probe reachable under another name for its own test.
 eval "$(declare -f ip6_reject_available | sed '1s/^ip6_reject_available/real_ip6_reject_available/')"
+eval "$(declare -f ip6_nat_available | sed '1s/^ip6_nat_available/real_ip6_nat_available/')"
 stack=1; route=0; fwd=0; natok=1; filterok=1; rejectok=1; routedev=eth0
 ip6_stack_enabled()     { [[ $stack == 1 ]]; }
 ip6_default_route_dev() { if [[ $route == 1 ]]; then echo "$routedev"; fi; }
@@ -287,6 +288,24 @@ PROBE_CALLS=()
 ip6tables() { PROBE_CALLS+=("$*"); [[ "$1" == "-N" ]] && return 1; return 0; }
 assert_fail "probe fails when the chain cannot be created" real_ip6_reject_available
 assert_eq "1" "${#PROBE_CALLS[@]}" "failed -N leaves nothing to clean up"
+
+# NAT probe: same discipline, in the nat table, and it must try the MASQUERADE
+# target itself. A host can load ip6table_nat and still lack xt_MASQUERADE.
+PROBE_CALLS=()
+# shellcheck disable=SC2317  # mock, invoked indirectly by the probe
+ip6tables() { PROBE_CALLS+=("$*"); return 0; }
+real_ip6_nat_available; probe_rc=$?
+assert_eq "0" "$probe_rc" "nat probe succeeds when MASQUERADE is accepted"
+assert_eq "-t nat -N" "${PROBE_CALLS[0]% *}" "nat probe creates its chain in the nat table first"
+nat_chain="${PROBE_CALLS[0]##* }"
+assert_contains "$nat_chain" 'AWG_PROBE_' "nat probe chain is namespaced"
+assert_eq "-t nat -A $nat_chain -j MASQUERADE" "${PROBE_CALLS[1]}" "nat probe tries the MASQUERADE target"
+assert_eq "-t nat -F $nat_chain|-t nat -X $nat_chain" "${PROBE_CALLS[2]}|${PROBE_CALLS[3]}" "nat probe removes only its own chain"
+PROBE_CALLS=()
+# shellcheck disable=SC2317  # mock: table loads, target does not
+ip6tables() { PROBE_CALLS+=("$*"); [[ "$*" == *"-j MASQUERADE"* ]] && return 1; return 0; }
+assert_fail "nat probe fails when only the MASQUERADE target is missing" real_ip6_nat_available
+assert_eq "4" "${#PROBE_CALLS[@]}" "a failed MASQUERADE still cleans up the chain"
 unset -f ip6tables
 
 # ---- template migration ------------------------------------------------

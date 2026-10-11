@@ -148,10 +148,19 @@ ip6_default_route_dev() {
 ip6_forwarding_enabled() {
     [[ "$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)" == "1" ]]
 }
-# Listing the table is enough: it fails when ip6table_nat cannot be loaded, and
-# a MASQUERADE PostUp on such a host fails and takes the whole tunnel with it.
+# The nat table (ip6table_nat) and the MASQUERADE target (xt_MASQUERADE, or
+# nft_masq under iptables-nft) are separate modules, and a MASQUERADE PostUp on
+# a host missing either fails and takes the whole tunnel with it. Listing the
+# table only proves the first, so try the target itself in a scratch chain of
+# the nat table, with the same unique-name, clean-only-our-own rules as the
+# REJECT probe below.
 ip6_nat_available() {
-    ip6tables -t nat -S >/dev/null 2>&1
+    local chain="AWG_PROBE_$$_${RANDOM}" rc=0
+    ip6tables -t nat -N "${chain}" >/dev/null 2>&1 || return 1
+    ip6tables -t nat -A "${chain}" -j MASQUERADE >/dev/null 2>&1 || rc=1
+    ip6tables -t nat -F "${chain}" >/dev/null 2>&1
+    ip6tables -t nat -X "${chain}" >/dev/null 2>&1
+    return "${rc}"
 }
 # Every mode's FORWARD rules need the filter table (ip6table_filter).
 ip6_filter_available() {
@@ -229,7 +238,7 @@ ip6_resolve_exit() {
             if ip6_nat_available; then
                 mode="nat"
             else
-                mode="off"; reason="IPv6 NAT is unavailable in this container (the host kernel has no usable ip6table_nat)"
+                mode="off"; reason="IPv6 NAT is unavailable in this container (the host kernel has no usable ip6table_nat or MASQUERADE target)"
             fi
         else
             mode="routed"
