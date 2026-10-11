@@ -5,7 +5,8 @@
 # Pure functions read only their arguments or the documented globals so the
 # file can be unit-tested outside the container (tests/ipv6-lib.test.sh).
 #
-# Globals consumed: IP6_SUBNET, IP6_EXIT, INTERFACE
+# Globals consumed: IP6_SUBNET, IP6_EXIT, INTERFACE,
+#                   IP6_TEMPLATE_READY (set by ip6_migrate_templates)
 # Globals produced: IP6_PREFIX, IP6_SUBNET_EFFECTIVE, IP6_EXIT_EFFECTIVE,
 #                   IP6_POSTUP, IP6_POSTDOWN
 
@@ -41,6 +42,24 @@ ip6_peer_addr() {
     printf '%s%s/128\n' "${prefix}" "${client_ip##*.}"
 }
 
+# <peer conf> -> the IPv4 address on its Address line, without a mask. The
+# line may list both families in any order and with or without spaces
+# ("10.13.13.2,fd..::2/128", "fd..::2/128, 10.13.13.2"). Prints nothing when
+# there is no IPv4 address.
+ip6_conf_ipv4() {
+    local line addr
+    line=$(grep -m1 -E '^[[:space:]]*Address[[:space:]]*=' "$1" 2>/dev/null) || return 0
+    line="${line#*=}"
+    line="${line//[[:space:]]/}"
+    local IFS=,
+    for addr in ${line}; do
+        if [[ "${addr}" == *.* && "${addr}" != *:* ]]; then
+            printf '%s\n' "${addr%%/*}"
+            return 0
+        fi
+    done
+}
+
 # Sets IP6_PREFIX ("" when IPv6 is disabled) and IP6_SUBNET_EFFECTIVE.
 # Uses the ip6_stack_enabled probe defined below: without an IPv6 stack the
 # container cannot even hold the address, so no prefix may be handed out.
@@ -53,6 +72,15 @@ ip6_resolve_subnet() {
         echo "**** IPv6 is disabled (IP6_SUBNET=off); peers get IPv4 addresses only ****"
         return 0
     fi
+    # A server template whose PostUp/PostDown cannot carry the IPv6 rules
+    # (customised, no placeholder) would hand peers addresses the firewall
+    # knows nothing about. Behave exactly as IP6_SUBNET=off instead.
+    if [[ "${IP6_TEMPLATE_READY:-1}" != "1" ]]; then
+        IP6_PREFIX=""
+        IP6_SUBNET_EFFECTIVE="off"
+        echo "**** IPv6 is disabled because /config/templates/server.conf has no \${IP6_POSTUP}/\${IP6_POSTDOWN} placeholders; peers get IPv4 addresses only. See README section \"IPv6\" ****"
+        return 0
+    fi
     # No IPv6 stack: 'ip -6 address add' and 'ip -6 route add' would fail, and
     # awg-quick (set -e, teardown trap) would take the whole tunnel down with
     # them - including IPv4. Behave exactly as IP6_SUBNET=off instead.
@@ -60,9 +88,9 @@ ip6_resolve_subnet() {
         IP6_PREFIX=""
         IP6_SUBNET_EFFECTIVE="off"
         if [[ -n "${requested}" ]]; then
-            echo "**** IPv6 is disabled in this container's kernel (sysctl net.ipv6.conf.all.disable_ipv6=1), so IP6_SUBNET=\"${requested}\" is ignored; peers get IPv4 addresses only ****"
+            echo "**** IPv6 is disabled in this container's kernel (sysctl net.ipv6.conf.all.disable_ipv6=1 or net.ipv6.conf.default.disable_ipv6=1), so IP6_SUBNET=\"${requested}\" is ignored; peers get IPv4 addresses only ****"
         else
-            echo "**** IPv6 is disabled in this container's kernel (sysctl net.ipv6.conf.all.disable_ipv6=1); peers get IPv4 addresses only ****"
+            echo "**** IPv6 is disabled in this container's kernel (sysctl net.ipv6.conf.all.disable_ipv6=1 or net.ipv6.conf.default.disable_ipv6=1); peers get IPv4 addresses only ****"
         fi
         return 0
     fi
@@ -80,11 +108,16 @@ ip6_resolve_subnet() {
 
 # ---- exit mode ---------------------------------------------------------
 # Probes read the container's own netns. Tests override them.
+# wg0 is created after this runs and takes its devconf from "default", not
+# "all": either one set to 1 makes 'ip -6 address add ... dev wg0' fail.
 ip6_stack_enabled() {
-    [[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" == "0" ]]
+    [[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" == "0" ]] &&
+        [[ "$(cat /proc/sys/net/ipv6/conf/default/disable_ipv6 2>/dev/null)" == "0" ]]
 }
-ip6_has_default_route() {
-    [[ -n "$(ip -6 route show default 2>/dev/null)" ]]
+# Interface of the first IPv6 default route; empty when there is none.
+ip6_default_route_dev() {
+    ip -6 route show default 2>/dev/null |
+        awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }'
 }
 ip6_forwarding_enabled() {
     [[ "$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)" == "1" ]]
@@ -94,20 +127,35 @@ ip6_forwarding_enabled() {
 ip6_nat_available() {
     ip6tables -t nat -S >/dev/null 2>&1
 }
+# Every mode's FORWARD rules need the filter table (ip6table_filter).
+ip6_filter_available() {
+    ip6tables -S FORWARD >/dev/null 2>&1
+}
+# The REJECT target is a separate module (ip6t_REJECT, or the xt compat layer
+# under iptables-nft) and cannot be listed, only used: try it in a scratch
+# chain that is removed again straight away.
+ip6_reject_available() {
+    local chain=AWG_PROBE rc=0
+    ip6tables -F "${chain}" >/dev/null 2>&1
+    ip6tables -X "${chain}" >/dev/null 2>&1
+    ip6tables -N "${chain}" >/dev/null 2>&1 || return 1
+    ip6tables -A "${chain}" -j REJECT --reject-with icmp6-adm-prohibited >/dev/null 2>&1 || rc=1
+    ip6tables -F "${chain}" >/dev/null 2>&1
+    ip6tables -X "${chain}" >/dev/null 2>&1
+    return "${rc}"
+}
 
 # Sets IP6_EXIT_EFFECTIVE, IP6_POSTUP, IP6_POSTDOWN from IP6_EXIT and IP6_PREFIX.
 ip6_resolve_exit() {
-    local mode="${IP6_EXIT:-auto}" reason=""
+    local mode="${IP6_EXIT:-auto}" reason="" dev="" offrules="reject"
     local accept='ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT'
     # "off" is no IPv6 *egress*, not no IPv6: a bare "-i %i -j REJECT" would also
     # reject wg0 -> wg0 forwarding and make peers unreachable to each other over
     # IPv6 while IPv4 (ACCEPT) still allows it. Keep the intra-tunnel path open.
     local intra='ip6tables -A FORWARD -i %i -o %i -j ACCEPT'
     local reject="${intra}; ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited"
-    # NAT only the tunnel prefix: the IPv4 rule is unqualified for historical
-    # reasons, but on network_mode: host an unqualified -o eth+ would NAT66
-    # every flow the host forwards.
-    local masq="ip6tables -t nat -A POSTROUTING -s ${IP6_PREFIX}/64 -o eth+ -j MASQUERADE"
+    local drop="${intra}; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP"
+    local masq
     mode="${mode,,}"
     IP6_POSTUP=""
     IP6_POSTDOWN=""
@@ -123,13 +171,16 @@ ip6_resolve_exit() {
             mode="auto"
             ;;
     esac
+    dev=$(ip6_default_route_dev)
+    # ip6_resolve_subnet already left IP6_PREFIX empty without an IPv6 stack,
+    # so the stack needs no second check here.
     if [[ "${mode}" == "auto" ]]; then
-        if ! ip6_stack_enabled; then
-            mode="off"; reason="IPv6 is disabled in the container (sysctl net.ipv6.conf.all.disable_ipv6=1)"
-        elif ! ip6_has_default_route; then
+        if [[ -z "${dev}" ]]; then
             mode="off"; reason="no IPv6 default route in the container"
         elif ! ip6_forwarding_enabled; then
             mode="off"; reason="sysctl net.ipv6.conf.all.forwarding is 0"
+        elif ! ip6_filter_available; then
+            mode="off"; reason="the ip6tables filter table is unavailable (the host kernel has no usable ip6table_filter)"
         elif ip6_is_ula "${IP6_PREFIX}"; then
             # Only on the auto path: a forced nat is honoured verbatim, failure
             # and all (spec 4.2). auto must not pick a mode whose PostUp fails.
@@ -142,16 +193,36 @@ ip6_resolve_exit() {
             mode="routed"
         fi
     fi
+    # NAT only the tunnel prefix, and out of the interface the default route
+    # actually uses: on network_mode: host that is rarely eth+, and a rule that
+    # never matches forwards the ULA unmasqueraded into a blackhole. eth+ is
+    # kept only for a forced nat with no route, where nothing would match anyway.
+    masq="ip6tables -t nat -A POSTROUTING -s ${IP6_PREFIX}/64 -o ${dev:-eth+} -j MASQUERADE"
+    # off is the safe fallback, so it must never fail PostUp itself (that
+    # takes IPv4 down too): REJECT if usable, else DROP, else no rules at all.
+    if [[ "${mode}" == "off" ]]; then
+        if ! ip6_filter_available; then
+            offrules="none"
+        elif ! ip6_reject_available; then
+            offrules="drop"
+        fi
+    fi
     IP6_EXIT_EFFECTIVE="${mode}"
     case "${mode}" in
         nat)    IP6_POSTUP="${accept}; ${masq}" ;;
         routed) IP6_POSTUP="${accept}" ;;
-        off)    IP6_POSTUP="${reject}" ;;
+        off)
+            case "${offrules}" in
+                reject) IP6_POSTUP="${reject}" ;;
+                drop)   IP6_POSTUP="${drop}" ;;
+                none)   IP6_POSTUP="" ;;
+            esac
+            ;;
     esac
     IP6_POSTDOWN="${IP6_POSTUP//ip6tables -A/ip6tables -D}"
     IP6_POSTDOWN="${IP6_POSTDOWN//-t nat -A/-t nat -D}"
     case "${mode}" in
-        nat)    echo "**** IPv6 exit: nat (peers' IPv6 traffic is masqueraded out of eth+) ****" ;;
+        nat)    echo "**** IPv6 exit: nat (peers' IPv6 traffic is masqueraded out of ${dev:-eth+}) ****" ;;
         routed) echo "**** IPv6 exit: routed (no NAT; ${IP6_PREFIX}/64 must be routed to this host) ****" ;;
         off)
             if [[ -n "${reason}" ]]; then
@@ -159,6 +230,10 @@ ip6_resolve_exit() {
             else
                 echo "**** IPv6 exit: off (IP6_EXIT=off). Peers get IPv6 addresses but IPv6 traffic is rejected ****"
             fi
+            case "${offrules}" in
+                drop) echo "**** IPv6 exit: the ip6tables REJECT target is unavailable; peers' IPv6 traffic is dropped instead (IPv6 connections time out rather than fail fast unless peers use the built-in DNS) ****" ;;
+                none) echo "**** IPv6 exit: the ip6tables filter table is unavailable; no IPv6 firewall rules are applied. Peers' IPv6 traffic has no route out, but nothing filters it either ****" ;;
+            esac
             ;;
     esac
 }
@@ -208,17 +283,63 @@ ip6_migrate_line() {
     return 0
 }
 
+# <file> <marker> <old line>... -> true when the line already carries the
+# marker or is one of the known old lines, i.e. ip6_migrate_line can handle it.
+ip6_line_migratable() {
+    local file=$1 marker=$2 old
+    shift 2
+    grep -Fq -- "${marker}" "${file}" && return 0
+    for old in "$@"; do
+        grep -Fxq -- "${old}" "${file}" && return 0
+    done
+    return 1
+}
+
 # <server template> <peer template>
+# Sets IP6_TEMPLATE_READY=1 when the server template carries both firewall
+# placeholders after migration, 0 otherwise (ip6_resolve_subnet then disables
+# IPv6, as a missing PostUp placeholder would leave peers' IPv6 unmanaged).
 ip6_migrate_templates() {
     local server=$1 peer=$2
+    IP6_TEMPLATE_READY=1
     ip6_migrate_line "${server}" "${IP6_NEW_SERVER_ADDRESS}" '${SERVER_IP6'   'Address'  "${IP6_OLD_SERVER_ADDRESS}"
-    ip6_migrate_line "${server}" "${IP6_NEW_POSTUP}"         '${IP6_POSTUP'   'PostUp'   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}"
-    ip6_migrate_line "${server}" "${IP6_NEW_POSTDOWN}"       '${IP6_POSTDOWN' 'PostDown' "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"
+    # PostUp and PostDown are migrated as a pair or not at all: migrating one
+    # alone leaves PostDown deleting rules PostUp never added (awg-quick down
+    # fails), or PostUp adding rules PostDown never removes.
+    if [[ -f "${server}" ]]; then
+        if ip6_line_migratable "${server}" '${IP6_POSTUP'   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}" &&
+           ip6_line_migratable "${server}" '${IP6_POSTDOWN' "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"; then
+            ip6_migrate_line "${server}" "${IP6_NEW_POSTUP}"   '${IP6_POSTUP'   'PostUp'   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}"
+            ip6_migrate_line "${server}" "${IP6_NEW_POSTDOWN}" '${IP6_POSTDOWN' 'PostDown' "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"
+        else
+            IP6_TEMPLATE_READY=0
+            echo "**** ${server}: PostUp/PostDown are customised and do not both carry the \${IP6_POSTUP}/\${IP6_POSTDOWN} placeholders; both were left alone and IPv6 is disabled. See README section \"IPv6\" ****"
+        fi
+    fi
     ip6_migrate_line "${peer}"   "${IP6_NEW_PEER_ADDRESS}"   '${CLIENT_IP6'   'Address'  "${IP6_OLD_PEER_ADDRESS}"
 }
 
 # ---- coredns AAAA filter -----------------------------------------------
 IP6_COREDNS_IMPORT='import /config/coredns/generated/*.conf'
+# The Corefile shipped before IPv6 support. An unmodified copy is replaced by
+# the new default; a customised one only gets the hint below.
+IP6_OLD_COREFILE='. {
+    loop
+    errors
+    health
+    cache
+    forward . /etc/resolv.conf
+}'
+
+# <Corefile> <new default Corefile>
+ip6_migrate_corefile() {
+    local file=$1 default=$2
+    [[ -f "${file}" && -f "${default}" ]] || return 0
+    if [[ "$(cat "${file}")" == "${IP6_OLD_COREFILE}" ]]; then
+        cat "${default}" > "${file}"
+        echo "**** ${file}: added '${IP6_COREDNS_IMPORT}' for IPv6 AAAA filtering ****"
+    fi
+}
 
 # <exit-effective> <coredns dir>
 ip6_write_coredns_filter() {

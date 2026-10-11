@@ -618,7 +618,7 @@ DUDE"
                 awg genpsk > "/config/${PEER_ID}/presharedkey-${PEER_ID}"
             fi
             if [[ -f "/config/${PEER_ID}/${PEER_ID}.conf" ]]; then
-                CLIENT_IP=$(grep "Address" "/config/${PEER_ID}/${PEER_ID}.conf" | awk '{print $NF}' | cut -d, -f1)
+                CLIENT_IP=$(ip6_conf_ipv4 "/config/${PEER_ID}/${PEER_ID}.conf")
                 if [[ -n "${ORIG_INTERFACE}" ]] && [[ "${INTERFACE}" != "${ORIG_INTERFACE}" ]]; then
                     CLIENT_IP="${CLIENT_IP//${ORIG_INTERFACE}/${INTERFACE}}"
                 fi
@@ -721,6 +721,7 @@ ORIG_ALLOWEDIPS="$ALLOWEDIPS"
 ORIG_PERSISTENTKEEPALIVE_PEERS="$PERSISTENTKEEPALIVE_PEERS"
 ORIG_IP6_SUBNET="$IP6_SUBNET_EFFECTIVE"
 ORIG_IP6_EXIT="$IP6_EXIT_EFFECTIVE"
+ORIG_IP6_POSTUP="$IP6_POSTUP"
 ORIG_AWG_VERSION="$AWG_VERSION"
 ORIG_AWG_JC="$AWG_JC"
 ORIG_AWG_JMIN="$AWG_JMIN"
@@ -818,6 +819,7 @@ if [[ -n "$PEERS" ]]; then
            [[ "$PERSISTENTKEEPALIVE_PEERS" != "$ORIG_PERSISTENTKEEPALIVE_PEERS" ]] || \
            [[ "$IP6_SUBNET_EFFECTIVE" != "$ORIG_IP6_SUBNET" ]] || \
            [[ "$IP6_EXIT_EFFECTIVE" != "$ORIG_IP6_EXIT" ]] || \
+           [[ "$IP6_POSTUP" != "$ORIG_IP6_POSTUP" ]] || \
            [[ "$AWG_VERSION" != "$ORIG_AWG_VERSION" ]] || \
            [[ "$AWG_JC" != "$ORIG_AWG_JC" ]] || \
            [[ "$AWG_JMIN" != "$ORIG_AWG_JMIN" ]] || \
@@ -862,6 +864,8 @@ if [[ ! -f /config/coredns/Corefile ]]; then
     mkdir -p /config/coredns
     cp /defaults/Corefile /config/coredns/Corefile
 fi
+# an unmodified pre-IPv6 Corefile gets the generated/*.conf import
+ip6_migrate_corefile /config/coredns/Corefile /defaults/Corefile
 # AAAA filter for peers: active only when IPv6 exit is off. In client mode
 # IP6_EXIT_EFFECTIVE is unset; treat that as "no filter".
 ip6_write_coredns_filter "${IP6_EXIT_EFFECTIVE:-nat}" /config/coredns

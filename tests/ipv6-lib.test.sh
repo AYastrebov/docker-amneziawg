@@ -69,15 +69,28 @@ assert_eq "fd0a:0d0d:0000::2/128" "$(ip6_peer_addr 'fd0a:0d0d:0000::' 10.13.13.2
 assert_eq "fd0a:0d0d:0000::10/128" "$(ip6_peer_addr 'fd0a:0d0d:0000::' 10.13.13.10)" "peer .10 literal"
 assert_eq "fd0a:0d0d:0000::254/128" "$(ip6_peer_addr 'fd0a:0d0d:0000::' 10.13.13.254)" "peer .254"
 
+# ---- Address read-back --------------------------------------------------
+TMPD=$(mktemp -d)
+trap 'rm -rf "$TMPD"' EXIT
+conf_addr() { printf '[Interface]\n%s\nDNS = 10.13.13.1\n' "$1" > "$TMPD/a.conf"; ip6_conf_ipv4 "$TMPD/a.conf"; }
+assert_eq "10.13.13.2" "$(conf_addr 'Address = 10.13.13.2')" "read-back: v4 only"
+assert_eq "10.13.13.2" "$(conf_addr 'Address = 10.13.13.2,fd0a:0d0d:0000::2/128')" "read-back: dual, no space"
+assert_eq "10.13.13.2" "$(conf_addr 'Address = 10.13.13.2, fd0a:0d0d:0000::2/128')" "read-back: dual, space after comma"
+assert_eq "10.13.13.2" "$(conf_addr 'Address = fd0a:0d0d:0000::2/128, 10.13.13.2')" "read-back: v6 first"
+assert_eq "10.13.13.2" "$(conf_addr 'Address=10.13.13.2/32')" "read-back: mask stripped, no spaces"
+assert_eq "" "$(conf_addr 'Address = fd0a:0d0d:0000::2/128')" "read-back: v6 only -> empty"
+
 # ---- probe overrides ---------------------------------------------------
-# The four probes read the container's own netns, which the test host does not
+# The probes read the container's own netns, which the test host does not
 # have. Override them all up front so every resolver test is deterministic;
 # the defaults describe a host with a full IPv6 stack.
-stack=1; route=0; fwd=0; natok=1
+stack=1; route=0; fwd=0; natok=1; filterok=1; rejectok=1; routedev=eth0
 ip6_stack_enabled()     { [[ $stack == 1 ]]; }
-ip6_has_default_route() { [[ $route == 1 ]]; }
+ip6_default_route_dev() { if [[ $route == 1 ]]; then echo "$routedev"; fi; }
 ip6_forwarding_enabled(){ [[ $fwd == 1 ]]; }
 ip6_nat_available()     { [[ $natok == 1 ]]; }
+ip6_filter_available()  { [[ $filterok == 1 ]]; }
+ip6_reject_available()  { [[ $rejectok == 1 ]]; }
 
 # ---- resolve_subnet ----------------------------------------------------
 INTERFACE=10.13.13
@@ -121,14 +134,24 @@ assert_eq "|off" "${log##*$'\n'}" "no stack + off -> off"
 assert_contains "$log" 'IP6_SUBNET=off' "off is reported as off, not as a missing stack"
 stack=1
 
+# server template could not take the IPv6 placeholders: same as off
+unset IP6_SUBNET
+IP6_TEMPLATE_READY=0
+log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
+assert_eq "|off" "${log##*$'\n'}" "template not ready -> no prefix"
+assert_contains "$log" 'no ${IP6_POSTUP}/${IP6_POSTDOWN} placeholders' "template not ready: reason logged"
+unset IP6_TEMPLATE_READY
+
 # ---- resolve_exit ------------------------------------------------------
 
 ACCEPT='ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT'
 # off keeps wg0 -> wg0 forwarding open so peers can still reach each other over IPv6, as they can over IPv4
 INTRA='ip6tables -A FORWARD -i %i -o %i -j ACCEPT'
 REJECT="${INTRA}; ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited"
-masq() { printf 'ip6tables -t nat -A POSTROUTING -s %s/64 -o eth+ -j MASQUERADE' "$1"; }
+DROPR="${INTRA}; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP"
+masq() { printf 'ip6tables -t nat -A POSTROUTING -s %s/64 -o %s -j MASQUERADE' "$1" "${2:-eth0}"; }
 MASQ=$(masq fd0a:0d0d:0000::)
+MASQNR=$(masq fd0a:0d0d:0000:: eth+)  # forced nat without a default route
 
 run_exit() {  # <IP6_EXIT> <IP6_PREFIX> <stack> <route> <fwd> [natok] -> "mode|postup|postdown" on last line
     IP6_EXIT=$1 IP6_PREFIX=$2 stack=$3 route=$4 fwd=$5 natok=${6:-1}
@@ -152,15 +175,13 @@ assert_eq "off|${REJECT}|${REJECT//-A/-D}" \
     "$(run_exit auto fd0a:0d0d:0000:: 1 0 1)" "auto: no route -> off"
 assert_eq "off|${REJECT}|${REJECT//-A/-D}" \
     "$(run_exit auto fd0a:0d0d:0000:: 1 1 0)" "auto: no forwarding -> off"
-assert_eq "off|${REJECT}|${REJECT//-A/-D}" \
-    "$(run_exit auto fd0a:0d0d:0000:: 0 1 1)" "auto: stack disabled -> off"
-assert_eq "nat|${ACCEPT}; ${MASQ}|${ACCEPT//-A/-D}; ${MASQ/-A/-D}" \
-    "$(run_exit nat fd0a:0d0d:0000:: 0 0 0)" "forced nat ignores probes"
+assert_eq "nat|${ACCEPT}; ${MASQNR}|${ACCEPT//-A/-D}; ${MASQNR/-A/-D}" \
+    "$(run_exit nat fd0a:0d0d:0000:: 0 0 0)" "forced nat ignores probes, eth+ without a route"
 assert_eq "routed|${ACCEPT}|${ACCEPT//-A/-D}" \
     "$(run_exit routed fd0a:0d0d:0000:: 0 0 0)" "forced routed"
 assert_eq "off|${REJECT}|${REJECT//-A/-D}" \
     "$(run_exit off fd0a:0d0d:0000:: 1 1 1)" "forced off"
-assert_eq "nat|${ACCEPT}; ${MASQ}|${ACCEPT//-A/-D}; ${MASQ/-A/-D}" \
+assert_eq "nat|${ACCEPT}; ${MASQNR}|${ACCEPT//-A/-D}; ${MASQNR/-A/-D}" \
     "$(run_exit NAT fd0a:0d0d:0000:: 0 0 0)" "mode is case-insensitive"
 assert_eq "off||" "$(run_exit auto '' 1 1 1)" "no prefix -> off, no rules"
 assert_eq "off||" "$(run_exit nat '' 1 1 1)" "no prefix beats forced nat"
@@ -183,9 +204,30 @@ assert_eq "routed|${ACCEPT}|${ACCEPT//-A/-D}" \
 assert_eq "nat|${ACCEPT}; ${MASQ}|${ACCEPT//-A/-D}; ${MASQ/-A/-D}" \
     "$(run_exit nat fd0a:0d0d:0000:: 1 1 1 0)" "forced nat is honoured without ip6table_nat"
 
+# MASQUERADE follows the default route's interface (network_mode: host)
+routedev=enp3s0
+assert_eq "nat|${ACCEPT}; $(masq fd0a:0d0d:0000:: enp3s0)|${ACCEPT//-A/-D}; $(masq fd0a:0d0d:0000:: enp3s0 | sed s/-A/-D/)" \
+    "$(run_exit auto fd0a:0d0d:0000:: 1 1 1)" "nat masquerades out of the default route's dev"
+assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 1 1)" 'masqueraded out of enp3s0' "nat log names the dev"
+routedev=eth0
+
+# off must never fail PostUp: REJECT -> DROP -> nothing, as the host allows
+rejectok=0
+assert_eq "off|${DROPR}|${DROPR//-A/-D}" \
+    "$(run_exit auto fd0a:0d0d:0000:: 1 0 1)" "off without REJECT target -> DROP"
+assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 0 1)" 'REJECT target is unavailable' "DROP fallback logged"
+assert_eq "off|${DROPR}|${DROPR//-A/-D}" \
+    "$(run_exit off fd0a:0d0d:0000:: 1 1 1)" "forced off without REJECT target -> DROP"
+rejectok=1
+filterok=0
+assert_eq "off||" "$(run_exit auto fd0a:0d0d:0000:: 1 0 1)" "off without filter table -> no rules"
+assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 0 1)" 'filter table is unavailable' "no-filter fallback logged"
+assert_eq "off||" "$(run_exit auto fd0a:0d0d:0000:: 1 1 1)" "auto: route+fwd but no filter table -> off, no rules"
+assert_eq "off||" "$(run_exit auto 2001:db8:1:: 1 1 1)" "auto: routed needs the filter table too"
+assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 1 1)" 'ip6table_filter' "off reason names ip6table_filter"
+filterok=1
+
 # ---- template migration ------------------------------------------------
-TMPD=$(mktemp -d)
-trap 'rm -rf "$TMPD"' EXIT
 
 old_server() {  # exactly the template shipped before this feature
     cat > "$1" <<'EOF'
@@ -222,7 +264,7 @@ EOF
 }
 
 old_server "$TMPD/server.conf"; old_peer "$TMPD/peer.conf"
-log=$(ip6_migrate_templates "$TMPD/server.conf" "$TMPD/peer.conf")
+ip6_migrate_templates "$TMPD/server.conf" "$TMPD/peer.conf" > "$TMPD/log"; log=$(cat "$TMPD/log")
 assert_contains "$(cat "$TMPD/server.conf")" 'Address = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}' "server Address migrated"
 assert_contains "$(cat "$TMPD/server.conf")" 'MASQUERADE${IP6_POSTUP:+; ${IP6_POSTUP}}' "PostUp migrated"
 assert_contains "$(cat "$TMPD/server.conf")" 'MASQUERADE${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}' "PostDown migrated"
@@ -231,6 +273,7 @@ assert_contains "$(cat "$TMPD/peer.conf")" 'Address = ${CLIENT_IP}${CLIENT_IP6:+
 assert_eq "7" "$(wc -l < "$TMPD/server.conf" | tr -d ' ')" "server line count unchanged"
 assert_eq "7" "$(wc -l < "$TMPD/peer.conf" | tr -d ' ')" "peer line count unchanged"
 assert_contains "$log" 'migrated PostUp' "migration logged"
+assert_eq "1" "$IP6_TEMPLATE_READY" "default templates are ready"
 
 # #36 DROP variant migrates the same way
 drop_server "$TMPD/drop.conf"
@@ -246,18 +289,39 @@ log=$(ip6_migrate_templates "$TMPD/server.conf" "$TMPD/peer.conf")
 assert_eq "$before" "$(cat "$TMPD/server.conf" "$TMPD/peer.conf")" "second run is a no-op"
 assert_eq "" "$log" "second run is silent"
 
-# customised PostUp: warned, untouched, other lines still migrated
+# customised PostUp: warned, PostUp *and* PostDown untouched (a lone migrated
+# PostDown would delete rules PostUp never added), IPv6 disabled
 old_server "$TMPD/custom.conf"
 sed -i.bak 's|^PostUp = .*|PostUp = iptables -A FORWARD -i %i -j ACCEPT; /config/my-hook.sh|' "$TMPD/custom.conf"
-log=$(ip6_migrate_templates "$TMPD/custom.conf" "$TMPD/peer.conf")
-assert_contains "$log" 'PostUp line is customised' "customised PostUp warned"
+ip6_migrate_templates "$TMPD/custom.conf" "$TMPD/peer.conf" > "$TMPD/log"; log=$(cat "$TMPD/log")
+assert_contains "$log" 'PostUp/PostDown are customised' "customised PostUp warned"
 assert_contains "$(cat "$TMPD/custom.conf")" 'PostUp = iptables -A FORWARD -i %i -j ACCEPT; /config/my-hook.sh' "customised PostUp untouched"
+assert_eq "0" "$(grep -c 'IP6_POSTDOWN' "$TMPD/custom.conf")" "PostDown not migrated alone"
+assert_eq "1" "$(grep -c 'ip6tables -D FORWARD -i %i -j ACCEPT' "$TMPD/custom.conf")" "old PostDown kept"
+assert_eq "0" "$IP6_TEMPLATE_READY" "customised pair -> template not ready"
 assert_contains "$(cat "$TMPD/custom.conf")" '${SERVER_IP6:+' "Address still migrated in customised file"
+
+# customised #36 DROP PostUp (eth+ changed): same, so peers never get IPv6
+# addresses that the customised DROP would silently blackhole
+drop_server "$TMPD/cdrop.conf"
+sed -i.bak 's|eth+|ens+|' "$TMPD/cdrop.conf"
+ip6_migrate_templates "$TMPD/cdrop.conf" "$TMPD/peer.conf" > /dev/null
+assert_eq "0" "$IP6_TEMPLATE_READY" "customised DROP pair -> template not ready"
+assert_eq "2" "$(grep -c -- '-j DROP$' "$TMPD/cdrop.conf")" "customised DROP pair untouched"
+
+# PostUp already carries the placeholder, PostDown is the old default: the
+# pair is migratable, PostDown is migrated
+old_server "$TMPD/half.conf"
+sed -i.bak 's|^PostUp = .*|PostUp = my-fw.sh${IP6_POSTUP:+; ${IP6_POSTUP}}|' "$TMPD/half.conf"
+ip6_migrate_templates "$TMPD/half.conf" "$TMPD/peer.conf" > /dev/null
+assert_eq "1" "$IP6_TEMPLATE_READY" "placeholder PostUp + old PostDown -> ready"
+assert_contains "$(cat "$TMPD/half.conf")" 'MASQUERADE${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}' "PostDown migrated next to a placeholder PostUp"
 
 # user already added the placeholder to a customised line: silent
 printf 'PostUp = my-fw.sh${IP6_POSTUP:+; ${IP6_POSTUP}}\nAddress = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}\nPostDown = x${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}\n' > "$TMPD/marker.conf"
-log=$(ip6_migrate_templates "$TMPD/marker.conf" "$TMPD/peer.conf")
-assert_eq "" "$log" "marker present -> silent"
+ip6_migrate_templates "$TMPD/marker.conf" "$TMPD/peer.conf" > "$TMPD/log"
+assert_eq "" "$(cat "$TMPD/log")" "marker present -> silent"
+assert_eq "1" "$IP6_TEMPLATE_READY" "marker present -> ready"
 
 # ---- coredns filter ----------------------------------------------------
 CD="$TMPD/coredns"; mkdir -p "$CD"
@@ -279,6 +343,18 @@ rm -rf "$CD"; mkdir -p "$CD"
 log=$(ip6_write_coredns_filter off "$CD")
 assert_contains "$(cat "$CD/generated/ipv6.conf")" 'template IN AAAA' "works before Corefile exists"
 assert_eq "" "$log" "no Corefile -> no hint"
+
+# unmodified pre-IPv6 Corefile is migrated to the new default; customised is not
+printf '%s\n' "$IP6_OLD_COREFILE" > "$CD/Corefile"
+log=$(ip6_migrate_corefile "$CD/Corefile" "$HERE/../root/defaults/Corefile")
+assert_eq "$(cat "$HERE/../root/defaults/Corefile")" "$(cat "$CD/Corefile")" "old default Corefile replaced by new default"
+assert_contains "$log" 'added' "Corefile migration logged"
+log=$(ip6_migrate_corefile "$CD/Corefile" "$HERE/../root/defaults/Corefile")
+assert_eq "" "$log" "Corefile migration is idempotent"
+printf '. {\n    forward . 1.1.1.1\n}\n' > "$CD/Corefile"
+log=$(ip6_migrate_corefile "$CD/Corefile" "$HERE/../root/defaults/Corefile")
+assert_eq "" "$log" "customised Corefile left alone"
+assert_contains "$(cat "$CD/Corefile")" 'forward . 1.1.1.1' "customised Corefile untouched"
 
 # ---- shipped defaults match the migration targets -----------------------
 assert_eq "1" "$(grep -Fxc -- "$IP6_NEW_SERVER_ADDRESS" "$HERE/../root/defaults/server.conf")" "defaults/server.conf Address == IP6_NEW_SERVER_ADDRESS"
