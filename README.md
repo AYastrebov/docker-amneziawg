@@ -311,6 +311,42 @@ turning on egress later changes only the server's firewall rules. `enable_ipv6`
 needs Docker ≥ 27 — on older Docker `docker compose up` fails while creating
 the network, which is why the lines are shipped commented out.
 
+### MTU floor
+
+IPv6 needs an interface MTU of at least 1280, and Linux enforces it the hard
+way: the moment `awg-quick` sets `wg0` to anything smaller, the kernel removes
+the IPv6 address it just added, and the next `ip -6 route add` fails with
+`RTNETLINK answers: No such device` — which under `set -e` takes the whole
+tunnel down, IPv4 included. A peer conf with `MTU` under 1280 does the same on
+a Linux client, and Windows refuses the address outright.
+
+So once `IP6_SUBNET` is set, **`MTU = 1280` is a hard floor in both
+`/config/templates/server.conf` and `peer.conf`**. The container checks this
+at startup: if either template pins a smaller value, IPv6 stays off (exactly
+as `IP6_SUBNET=off`), the log names the file and the value, and the tunnel
+comes up IPv4-only. Raise the MTU or drop the line, restart, and the confs are
+regenerated with IPv6.
+
+This collides with the [MTU](#mtu) advice for constrained paths. A client
+behind a 1280-byte IPv4 path (DS-Lite is the common case: the IPv4 path MTU
+is exactly 1280) needs a tunnel MTU of `1280 − 60 − S4` = 1208 over an IPv4
+endpoint, and 1208 cannot carry IPv6. That client has two options, both
+verified on such a path:
+
+- **Stay IPv4-only**: delete the IPv6 address from its `Address` line and
+  `::/0` from `AllowedIPs`, keep `MTU = 1208`. Full speed, no in-tunnel IPv6
+  (and the dual-stack leak stays open on that device).
+- **Use the IPv6 endpoint**: Docker publishes the port on `[::]` too, so
+  `Endpoint = [<host IPv6>]:<port>` works when the host has a global address
+  (the IPv6 `DOCKER-USER` chain is normally empty, so no extra firewall
+  entry). The native IPv6 path is usually 1492 or 1500, which allows an MTU
+  up to `path − 80 − S4` (1400 on PPPoE) with IPv6 inside. Mind the PMTU
+  trap under [Troubleshooting](#troubleshooting) before raising a peer above
+  the server's MTU.
+
+Peers on ordinary 1500-byte paths (mobile, most wired) are unaffected: 1280
+on both ends is the recommended value anyway.
+
 ### Options
 
 - `IP6_SUBNET=auto` — enable IPv6 with a ULA prefix derived from `INTERNAL_SUBNET`.
@@ -369,6 +405,8 @@ ICMPv6 reject and falls back to IPv4, instead of never trying.
 
 - **`ip6tables: ... No chain/target/match by that name` in the log and the tunnel does not start** — the host lacks an IPv6 netfilter module (`ip6table_nat`, `ip6table_filter` or `ip6t_REJECT`). `IP6_EXIT=auto` probes the nat table, the MASQUERADE target and the REJECT target and never picks a mode that needs a missing one; `off` degrades to DROP when REJECT is missing; and without the filter table IPv6 is disabled outright, all with the reason in the log, so with `auto` or `off` this does not happen. A forced `IP6_EXIT=nat` or `routed` is honoured verbatim and will fail here — that is deliberate. Drop the forced mode, or set `IP6_SUBNET=off`.
 - **IPv6 sites hang on peers** — the exit is `off` and `net.ipv6.conf.all.forwarding=1` is not set, so the kernel drops IPv6 silently instead of refusing it. Add the sysctl (see [IPv6](#ipv6)). Peers using the container's DNS (`PEERDNS=auto`) are mostly spared because they get no AAAA records; a peer with a public resolver, or one dialling an IPv6 literal, is not. Enabling IPv6 egress also fixes it.
+- **Tunnel fails right after `ip link set mtu NNNN up` with `RTNETLINK answers: No such device` on an `ip -6 route add`** — the MTU is below 1280 (see [MTU floor](#mtu-floor)). The container refuses to hand out IPv6 while a template pins such a value, so this is only reachable with a hand-edited generated conf, or on a client whose conf was lowered after export. Raise the MTU to 1280, or strip the IPv6 address and `::/0` from that conf.
+- **One peer's upload collapses to under 1 Mbit/s for ten minutes at a time, download is fine, and it started after that peer ran a speed test against the server host** — a PMTU cache trap on the server, confirmed with `tcpdump`. The peer's tunnel MTU is above the server's `wg0` MTU (1280). A large packet the *host itself* sends to that peer (an iperf3 server on the host, a download served by the host) exceeds `wg0`, the container answers "packet too big, mtu 1280", and the host caches that against the container's bridge address — the same address the inbound AWG port is DNAT'd to. The host then bounces every inbound AWG datagram over 1280 bytes with the same ICMP until the entry expires (`ip -6 route show cache`, `ip route get <container ip>`). It cannot happen while peer MTU ≤ server MTU, since TCP MSS keeps the host's packets within `wg0`. Keep peers at or below the server's MTU, or add TCP MSS clamping to the server template if you must raise one.
 
 ## Custom protocol signatures (I1-I5)
 
@@ -461,7 +499,7 @@ Be precise about what the "IPv6 minimum" argument guarantees, though: the 1280-b
 | Situation | Tunnel MTU | Why |
 |-----------|-----------:|-----|
 | Mobile clients, PPPoE, unknown paths, anything that "works but is slow" | **1280** | Clears every ordinary path (needs path MTU ≥ `1340 + S4` on the wire for an IPv4 endpoint, `1360 + S4` for IPv6); the cost is a ~10% higher header-to-payload ratio, which is nothing next to fragmentation loss |
-| Path that is itself constrained to ~1280 (DS-Lite, tunnel-in-tunnel, some LTE) | `path − 60 − S4` (IPv4) / `path − 80 − S4` (IPv6) | The outer packet must fit the *path*, not the IPv6 floor: at `S4 = 12` a 1280-byte path needs tunnel MTU **1208** (IPv4 endpoint) or **1188** (IPv6). Measure with a `ping -M do` binary search |
+| Path that is itself constrained to ~1280 (DS-Lite, tunnel-in-tunnel, some LTE) | `path − 60 − S4` (IPv4) / `path − 80 − S4` (IPv6) | The outer packet must fit the *path*, not the IPv6 floor: at `S4 = 12` a 1280-byte path needs tunnel MTU **1208** (IPv4 endpoint) or **1188** (IPv6). Measure with a `ping -M do` binary search. Both values are below 1280, so such a peer cannot carry IPv6 inside the tunnel — see [MTU floor](#mtu-floor) |
 | Wired clients on a clean 1500-byte path, IPv4 endpoint | 1400-1413 | `1500 − 20 − 8 − 32 − S4`. 1413 is the ceiling for the largest default `S4` (27), 1408 for the hard maximum (32); 1400 also survives one extra 8-byte encapsulation |
 | IPv6 endpoint on a 1500-byte path | 1380-1393 | `1500 − 40 − 8 − 32 − S4`: 1393 for `S4 = 27`, 1388 for `S4 = 32` |
 | You have set `AWG_S4` yourself | `path − 60 (IPv4) / 80 (IPv6) − S4` | Recompute when you change `S4` |
@@ -479,6 +517,8 @@ For an existing deployment, add an `MTU` line to the `[Interface]` section of th
 Address = ...
 MTU = 1280
 ```
+
+With `IP6_SUBNET` set, neither template may go below 1280 — the container keeps IPv6 off and says so if one does ([MTU floor](#mtu-floor)).
 
 Set it on both the server conf (`/config/wg_confs/wg0.conf`) and every peer conf (`/config/peerN/peerN.conf`, then re-import on the device — QR codes and `.conf` files are regenerated from the templates only, so hand-edited peer confs must be re-distributed). The two sides do not have to agree — each side's MTU only limits what *it* sends — but a peer left at 1420 still fragments its uploads. The AmneziaVPN app exposes MTU in the connection settings; on Windows the WinTUN adapter ignores the config value and uses 1280 regardless.
 

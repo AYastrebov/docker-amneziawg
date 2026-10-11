@@ -43,6 +43,7 @@ services:
       # Opt in to give peers a ULA IPv6 address (derived from INTERNAL_SUBNET) so
       # dual-stack clients cannot leak IPv6 around the tunnel. For IPv6 egress also
       # uncomment the forwarding sysctl and the networks block further down.
+      # Templates must keep MTU >= 1280 (IPv6 minimum) or IPv6 stays off.
       # - IP6_SUBNET=auto                  # auto | <prefix>::/64 | off (default)
       # - IP6_EXIT=auto                    # auto | nat | routed | off
 
