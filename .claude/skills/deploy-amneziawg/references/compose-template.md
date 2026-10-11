@@ -33,11 +33,11 @@ services:
       - PERSISTENTKEEPALIVE_PEERS=<<all OR peer names OR omit>>
       - LOG_CONFS=true
 
-      # ---- IPv6 ----
-      # Peers always get a ULA IPv6 address (derived from INTERNAL_SUBNET) so dual-stack
-      # clients cannot leak IPv6 around the tunnel. Egress is opt-in: uncomment the two
-      # IPv6 lines further down (forwarding sysctl + networks block).
-      # - IP6_SUBNET=fd12:3456:789a::/64   # Own prefix; "off" disables IPv6 entirely
+      # ---- IPv6 (off by default) ----
+      # Opt in to give peers a ULA IPv6 address (derived from INTERNAL_SUBNET) so
+      # dual-stack clients cannot leak IPv6 around the tunnel. For IPv6 egress also
+      # uncomment the forwarding sysctl and the networks block further down.
+      # - IP6_SUBNET=auto                  # auto | <prefix>::/64 | off (default)
       # - IP6_EXIT=auto                    # auto | nat | routed | off
 
       # AWG version (omit for default 2.0)
@@ -71,16 +71,18 @@ services:
       - net.ipv6.conf.all.disable_ipv6=0   # not required for this feature: Docker >= 27 disables IPv6
                                             # per interface (eth0 only), wg0 is unaffected — see
                                             # docs/superpowers/specs/2026-08-26-ipv6-support-design.md §3
-      # IPv6 egress (opt-in): uncomment the next line together with the networks
-      # block at the bottom of this file. Needs Docker >= 27 - on older Docker
-      # 'docker compose up' fails while creating the network.
+      # Uncomment whenever IP6_SUBNET is set, with or without IPv6 egress: with
+      # forwarding off the kernel drops peers' IPv6 silently (connections hang
+      # until timeout) instead of answering with an ICMPv6 error. For egress also
+      # uncomment the networks block at the bottom of this file.
       # - net.ipv6.conf.all.forwarding=1
     restart: unless-stopped
 
 # IPv6 egress (opt-in): uncomment together with the forwarding sysctl above.
-# Docker >= 27 allocates a ULA for this network and does NAT66 itself; without
-# these two the container still gives peers IPv6 addresses and rejects their
-# IPv6 traffic, which is what stops a dual-stack client leaking around the VPN.
+# Needs IP6_SUBNET set. Docker >= 27 allocates a ULA for this network and does
+# NAT66 itself; without these two an IP6_SUBNET container still gives peers IPv6
+# addresses and rejects their IPv6 traffic, which is what stops a dual-stack
+# client leaking around the VPN.
 # networks:
 #   default:
 #     enable_ipv6: true
@@ -88,13 +90,18 @@ services:
 
 ## Important rules when filling the template
 
-### IPv6 egress lines stay commented unless the host qualifies
+### IPv6 lines
 
-The forwarding sysctl and the `networks:` block ship commented out. Uncomment
-both only when the requirements-phase check reported host IPv6 egress **and**
-Docker >= 27 — on older Docker, `docker compose up` fails while creating the
-network, before the container starts. Leaving them commented is safe: peers
-still get IPv6 addresses (no leak) and their IPv6 is rejected at the server.
+Both ship commented out, and both stay that way unless the user set
+`IP6_SUBNET`. With `IP6_SUBNET` set:
+
+- **Uncomment the forwarding sysctl always.** Without it the kernel drops
+  peers' IPv6 silently (connections hang) instead of refusing it with ICMPv6.
+- **Uncomment the `networks:` block** only when the requirements-phase check
+  reported host IPv6 egress **and** Docker >= 27 — on older Docker,
+  `docker compose up` fails while creating the network, before the container
+  starts. Leaving it commented is safe: peers still get IPv6 addresses (no
+  leak) and their IPv6 is refused at the server.
 
 ### Port mapping with custom `SERVERPORT`
 

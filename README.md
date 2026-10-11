@@ -144,9 +144,9 @@ docker run -d \
 | `-e PEERS=3` | Number or comma-separated names (`laptop,phone`). Enables server mode |
 | `-e PEERDNS=auto` | DNS for peers. `auto` = container's CoreDNS at subnet.1 |
 | `-e INTERNAL_SUBNET=10.13.13.0` | VPN subnet (.1 = server, .2+ = peers) |
-| `-e ALLOWEDIPS=0.0.0.0/0, ::/0` | Traffic peers route into the tunnel. Keep `::/0`: peers now have an IPv6 address, so all IPv6 enters the tunnel and is either forwarded (IPv6 egress enabled) or rejected at the server — never leaked. Narrow to specific subnets for split tunnelling |
-| `-e IP6_SUBNET=` | IPv6 tunnel prefix, `<prefix>::/64`. Default: ULA derived from `INTERNAL_SUBNET` (`10.13.13.0` → `fd0a:0d0d:0000::/64`). `off` disables IPv6 entirely |
-| `-e IP6_EXIT=auto` | What the server does with peers' IPv6 traffic: `auto` (NAT when the container has IPv6, otherwise reject), `nat`, `routed`, `off` |
+| `-e ALLOWEDIPS=0.0.0.0/0, ::/0` | Traffic peers route into the tunnel. Keep `::/0` so IPv6 enters the tunnel instead of leaking around it. Narrow to specific subnets for split tunnelling |
+| `-e IP6_SUBNET=` | IPv6 inside the tunnel, **off by default**. `auto` = ULA derived from `INTERNAL_SUBNET` (`10.13.13.0` → `fd0a:0d0d:0000::/64`), or your own `<prefix>::/64`. Unset or `off` keeps IPv4-only peers. See [IPv6](#ipv6) |
+| `-e IP6_EXIT=auto` | With IPv6 enabled, what the server does with peers' IPv6 traffic: `auto` (NAT when the container has IPv6, otherwise reject), `nat`, `routed`, `off` |
 | `-e PERSISTENTKEEPALIVE_PEERS=` | Which peers get keepalive: `all` or comma-separated names/numbers |
 | `-e SERVER_ALLOWEDIPS_PEER_X=` | Per-peer server AllowedIPs for site-to-site VPN |
 | `-e LOG_CONFS=true` | Show generated configs and QR codes in container logs |
@@ -256,28 +256,43 @@ To turn a switch back off, set it to `off` rather than removing it — removing 
 
 ## IPv6
 
-Every peer gets an IPv6 address inside the tunnel by default (a ULA derived from
-`INTERNAL_SUBNET`), so dual-stack clients route **all** their IPv6 into the
-tunnel instead of leaking it around the VPN. What happens to that traffic at
-the server depends on three conditions: the IPv6 stack enabled, a default
-route, and `net.ipv6.conf.all.forwarding=1`:
+IPv6 is **off by default**. Without it the container behaves exactly as
+earlier releases did: peers get IPv4 addresses only, and IPv6 they send into
+the tunnel (via `::/0` in `ALLOWEDIPS`) is dropped at the server. Existing
+installations are not touched on upgrade — templates and Corefile stay as they
+are until you opt in.
+
+Set `IP6_SUBNET=auto` to opt in. Every peer then gets an IPv6 address inside
+the tunnel (a ULA derived from `INTERNAL_SUBNET`), so dual-stack clients route
+**all** their IPv6 into the tunnel and stop leaking it around the VPN. What
+happens to that traffic at the server depends on three conditions: the IPv6
+stack enabled, a default route, and `net.ipv6.conf.all.forwarding=1`:
 
 | container state | `IP6_EXIT=auto` resolves to | peers experience |
 |---|---|---|
-| no IPv6 stack (host booted with `ipv6.disable=1`, or `net.ipv6.conf.all/default.disable_ipv6=1`) | `off`, and no IPv6 address is handed out at all — same output as `IP6_SUBNET=off` | IPv4-only |
-| stack, but no route / no forwarding / no `ip6table_nat` / no `ip6table_filter` (default Docker network) | `off` — traffic is rejected with ICMPv6, and the built-in DNS returns no AAAA records | IPv4-only, no leak, no hangs |
-| all three, ULA prefix (the default) | `nat` — masqueraded out of the interface the IPv6 default route uses, like IPv4 | full IPv6 |
+| no IPv6 stack (host booted with `ipv6.disable=1`, or `net.ipv6.conf.all/default.disable_ipv6=1`) | IPv6 stays disabled and no IPv6 address is handed out — same output as `IP6_SUBNET=off` | IPv4-only |
+| stack and `forwarding=1`, but no route / no `ip6table_nat` / no `ip6table_filter` (default Docker network) | `off` — traffic is refused with ICMPv6, and the built-in DNS returns no AAAA records | IPv4-only, no leak, no hangs |
+| `net.ipv6.conf.all.forwarding=0` (the sysctl is not set) | `off` — the kernel drops peers' IPv6 **silently**, before any firewall rule sees it; the built-in DNS returns no AAAA records | IPv4-only, no leak; IPv6 connections that bypass the built-in DNS hang until timeout |
+| all three, ULA prefix (`IP6_SUBNET=auto`) | `nat` — masqueraded out of the interface the IPv6 default route uses, like IPv4 | full IPv6 |
 | all three, global prefix set via `IP6_SUBNET` | `routed` — forwarded unmasqueraded; that `/64` must be routed to this host | full IPv6 |
+
+**Set `net.ipv6.conf.all.forwarding=1` whenever you set `IP6_SUBNET`**, even
+without IPv6 egress. It is the difference between the last two `off` rows:
+with it, peers that try IPv6 get an immediate error and fall back to IPv4;
+without it, only peers using the built-in DNS (`PEERDNS=auto`) avoid the hang.
 
 ### Enable IPv6 egress
 
-Two lines in `docker-compose.yml`; nothing on the Docker daemon, nothing on
-other containers (Docker ≥ 27 allocates a ULA and does NAT66 itself). Both
-ship commented out in this repo's `docker-compose.yml` — uncomment them:
+`IP6_SUBNET=auto` plus two lines in `docker-compose.yml`; nothing on the
+Docker daemon, nothing on other containers (Docker ≥ 27 allocates a ULA and
+does NAT66 itself). All three ship commented out in this repo's
+`docker-compose.yml` — uncomment them:
 
 ```yaml
 services:
   amneziawg:
+    environment:
+      - IP6_SUBNET=auto
     sysctls:
       - net.ipv6.conf.all.forwarding=1   # add to the existing block
 networks:
@@ -285,23 +300,23 @@ networks:
     enable_ipv6: true
 ```
 
-Then `docker compose up -d` and check the log for `IPv6 exit: nat`. Peer confs
-are unchanged by this; only the server's firewall rules are. `enable_ipv6`
+Then `docker compose up -d` and check the log for `IPv6 exit: nat`. Enabling
+IPv6 changes every peer conf (it gains an IPv6 `Address`), so re-import them;
+turning on egress later changes only the server's firewall rules. `enable_ipv6`
 needs Docker ≥ 27 — on older Docker `docker compose up` fails while creating
 the network, which is why the lines are shipped commented out.
 
 ### Options
 
-- `IP6_SUBNET=fd12:3456:789a::/64` — pick your own prefix. A global (non-`fd`)
+- `IP6_SUBNET=auto` — enable IPv6 with a ULA prefix derived from `INTERNAL_SUBNET`.
+- `IP6_SUBNET=fd12:3456:789a::/64` — enable IPv6 with your own prefix. A global (non-`fd`)
   prefix makes `auto` choose `routed` (no NAT): use it only when that `/64` is
   actually routed to the host.
-- `IP6_SUBNET=off` — no IPv6 addresses and no `ip6tables` rules at all. Use
-  this if a client cannot parse an IPv6 `Address`. This also drops the
-  `ip6tables ... -j DROP` lines the previous release put in `PostUp`; peers
-  then have no IPv6 source address, so there is nothing for them to filter —
-  unless you route an IPv6 subnet through a peer with `SERVER_ALLOWEDIPS_PEER_*`,
-  in which case add your own `ip6tables` rules to the template.
-- `IP6_EXIT=nat|routed|off` — override auto-detection. A forced mode is used
+- `IP6_SUBNET=off` (or unset, the default) — no IPv6 addresses; the server
+  drops peers' IPv6 with the same two `ip6tables ... -j DROP` rules earlier
+  releases hard-coded. On a host without the `ip6table_filter` module those
+  rules are skipped rather than failing `PostUp`.
+- `IP6_EXIT=nat|routed|off` — with IPv6 enabled, override auto-detection. A forced mode is used
   verbatim: forcing `nat` on a host without an IPv6 route or without the
   `ip6table_nat` kernel module makes `PostUp` fail and the tunnel will not
   come up; the error is in the log. `auto` checks for both before it picks
@@ -313,10 +328,13 @@ publishes it on `[::]` too, so a hostname with an AAAA record also works, but
 
 ### Upgrading
 
-Existing peer configs keep working after the upgrade, but a device is
-protected from the IPv6 leak only once you re-import its regenerated conf
-(`/app/show-peer <name>`): the leak is closed by the peer *having* an IPv6
-address, and that lives in the client's conf, not on the server.
+Nothing changes on upgrade while IPv6 stays off. The steps below apply when you
+set `IP6_SUBNET` on an existing installation.
+
+Existing peer configs keep working, but a device is protected from the IPv6
+leak only once you re-import its regenerated conf (`/app/show-peer <name>`):
+the leak is closed by the peer *having* an IPv6 address, and that lives in the
+client's conf, not on the server.
 
 Templates in `/config/templates/` are migrated automatically (the old
 hard-coded `ip6tables` rules are replaced by `${IP6_POSTUP}` placeholders).
@@ -344,8 +362,8 @@ ICMPv6 reject and falls back to IPv4, instead of never trying.
 
 ### Troubleshooting
 
-- **`ip6tables: ... No chain/target/match by that name` in the log and the tunnel does not start** — the host lacks an IPv6 netfilter module (`ip6table_nat`, `ip6table_filter` or `ip6t_REJECT`). `IP6_EXIT=auto` probes all three and never picks a mode that needs a missing one, and `off` degrades on its own — REJECT, else DROP, else no rules — with the reason in the log, so with `auto` or `off` this does not happen. A forced `IP6_EXIT=nat` or `routed` is honoured verbatim and will fail here — that is deliberate. Drop the forced mode, or set `IP6_SUBNET=off` to emit no `ip6tables` rules at all.
-- **IPv6 sites hang on peers** — the peer is not using the container's DNS (`PEERDNS` set to a public resolver) and the exit is `off`. Either enable IPv6 egress or set `PEERDNS=auto`.
+- **`ip6tables: ... No chain/target/match by that name` in the log and the tunnel does not start** — the host lacks an IPv6 netfilter module (`ip6table_nat`, `ip6table_filter` or `ip6t_REJECT`). `IP6_EXIT=auto` probes all three and never picks a mode that needs a missing one, and `off` degrades on its own — REJECT, else DROP, else no rules — with the reason in the log, so with `auto` or `off` this does not happen. A forced `IP6_EXIT=nat` or `routed` is honoured verbatim and will fail here — that is deliberate. Drop the forced mode, or set `IP6_SUBNET=off`.
+- **IPv6 sites hang on peers** — the exit is `off` and `net.ipv6.conf.all.forwarding=1` is not set, so the kernel drops IPv6 silently instead of refusing it. Add the sysctl (see [IPv6](#ipv6)). Peers using the container's DNS (`PEERDNS=auto`) are mostly spared because they get no AAAA records; a peer with a public resolver, or one dialling an IPv6 literal, is not. Enabling IPv6 egress also fixes it.
 
 ## Custom protocol signatures (I1-I5)
 

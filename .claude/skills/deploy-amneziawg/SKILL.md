@@ -86,8 +86,8 @@ Ask the user for these settings. Group related questions to minimize back-and-fo
 | VPN subnet | `INTERNAL_SUBNET` | `10.13.13.0` | Change if `10.13.13.0/24` conflicts with the user's LAN. |
 | Peer DNS | `PEERDNS` | `auto` (container's CoreDNS) | Override to `1.1.1.1, 8.8.8.8` if the user wants public resolvers. |
 | Allowed IPs | `ALLOWEDIPS` | `0.0.0.0/0, ::/0` | Restrict to specific subnets for split-tunnel. |
-| IPv6 prefix | `IP6_SUBNET` | ULA derived from `INTERNAL_SUBNET` | `off` disables IPv6 entirely; a custom `<prefix>::/64` if the user has a routed global prefix. |
-| IPv6 egress | `IP6_EXIT` | `auto` | Peers always get an IPv6 address; `auto` NATs it out when the host has IPv6 (see the requirements-phase check) and otherwise rejects it fast — no leak either way. Mention `IP6_SUBNET=off` as the opt-out if the user doesn't want IPv6 in peer configs at all. |
+| IPv6 | `IP6_SUBNET` | unset (off) | Opt-in. Ask whether peers should get IPv6: `auto` (ULA derived from `INTERNAL_SUBNET`) closes the dual-stack leak; a custom `<prefix>::/64` if the user has a routed global prefix. Unset keeps peers IPv4-only. |
+| IPv6 egress | `IP6_EXIT` | `auto` | Only with `IP6_SUBNET` set. `auto` NATs peers' IPv6 out when the host has IPv6 (see the requirements-phase check) and otherwise blocks it — no leak either way. Blocking is a fast ICMPv6 refusal only with the `net.ipv6.conf.all.forwarding=1` sysctl, so uncomment it whenever `IP6_SUBNET` is set. |
 | Persistent keepalive | `PERSISTENTKEEPALIVE_PEERS` | unset | Set to `all` for mobile peers behind NAT. |
 | Per-peer site-to-site routes | `SERVER_ALLOWEDIPS_PEER_X` | unset | For routing back to a peer's LAN subnet. |
 | Log configs | `LOG_CONFS` | `true` | Keep `true` initially to see QR codes; can disable later. |

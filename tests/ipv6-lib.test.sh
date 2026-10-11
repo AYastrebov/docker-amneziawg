@@ -94,9 +94,21 @@ ip6_reject_available()  { [[ $rejectok == 1 ]]; }
 
 # ---- resolve_subnet ----------------------------------------------------
 INTERFACE=10.13.13
+# opt-in: unset keeps the pre-IPv6 behaviour
 unset IP6_SUBNET
+log=$(ip6_resolve_subnet; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
+assert_eq "|off" "${log##*$'\n'}" "unset -> off (opt-in)"
+assert_contains "$log" 'Set IP6_SUBNET=auto to enable it' "unset: says how to enable"
+assert_fail "unset is not requested" ip6_requested
+IP6_SUBNET=off; assert_fail "off is not requested" ip6_requested
+IP6_SUBNET=Off; assert_fail "Off is not requested" ip6_requested
+IP6_SUBNET=auto
+if ip6_requested; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "FAIL: auto is requested"; fi
 out=$(ip6_resolve_subnet; printf '%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
-assert_eq "fd0a:0d0d:0000::|fd0a:0d0d:0000::/64" "${out##*$'\n'}" "unset -> derived"
+assert_eq "fd0a:0d0d:0000::|fd0a:0d0d:0000::/64" "${out##*$'\n'}" "auto -> derived"
+IP6_SUBNET=AUTO
+out=$(ip6_resolve_subnet; printf '%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
+assert_eq "fd0a:0d0d:0000::|fd0a:0d0d:0000::/64" "${out##*$'\n'}" "AUTO case-insensitive"
 
 IP6_SUBNET=off
 out=$(ip6_resolve_subnet; printf '%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
@@ -117,7 +129,7 @@ assert_eq "fd0a:0d0d:0000::|fd0a:0d0d:0000::/64" "${log##*$'\n'}" "invalid -> de
 # no IPv6 stack in the container: no prefix at all, or awg-quick's 'ip -6 addr
 # add' fails and set -e tears the whole tunnel (IPv4 included) down.
 stack=0
-unset IP6_SUBNET
+IP6_SUBNET=auto
 log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
 assert_eq "|off" "${log##*$'\n'}" "no stack -> empty prefix, off"
 assert_contains "$log" 'IPv6 is disabled in this container' "no stack: reason logged"
@@ -135,7 +147,7 @@ assert_contains "$log" 'IP6_SUBNET=off' "off is reported as off, not as a missin
 stack=1
 
 # server template could not take the IPv6 placeholders: same as off
-unset IP6_SUBNET
+IP6_SUBNET=auto
 IP6_TEMPLATE_READY=0
 log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
 assert_eq "|off" "${log##*$'\n'}" "template not ready -> no prefix"
@@ -183,8 +195,21 @@ assert_eq "off|${REJECT}|${REJECT//-A/-D}" \
     "$(run_exit off fd0a:0d0d:0000:: 1 1 1)" "forced off"
 assert_eq "nat|${ACCEPT}; ${MASQNR}|${ACCEPT//-A/-D}; ${MASQNR/-A/-D}" \
     "$(run_exit NAT fd0a:0d0d:0000:: 0 0 0)" "mode is case-insensitive"
-assert_eq "off||" "$(run_exit auto '' 1 1 1)" "no prefix -> off, no rules"
-assert_eq "off||" "$(run_exit nat '' 1 1 1)" "no prefix beats forced nat"
+# IPv6 disabled: exactly the DROP pair the pre-IPv6 template hard-coded
+LEGACY='ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP'
+assert_eq "disabled|${LEGACY}|${LEGACY//-A/-D}" "$(run_exit auto '' 1 1 1)" "no prefix -> disabled, legacy DROP"
+assert_eq "disabled|${LEGACY}|${LEGACY//-A/-D}" "$(run_exit nat '' 1 1 1)" "no prefix beats forced nat"
+filterok=0
+assert_eq "disabled||" "$(run_exit auto '' 1 1 1)" "no prefix, no filter table -> no rules"
+filterok=1
+IP6_TEMPLATE_READY=0
+assert_eq "disabled||" "$(run_exit auto '' 1 1 1)" "customised template -> no rules for its PostDown to delete"
+unset IP6_TEMPLATE_READY
+# the rendered default template is byte-identical to the pre-IPv6 one
+IP6_POSTUP=$LEGACY
+rendered=""
+eval "rendered=\"$(grep '^PostUp' "$HERE/../root/defaults/server.conf")\""
+assert_eq 'PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP' "$rendered" "disabled renders the pre-IPv6 PostUp"
 assert_eq "nat|${ACCEPT}; ${MASQ}|${ACCEPT//-A/-D}; ${MASQ/-A/-D}" \
     "$(run_exit bogus fd0a:0d0d:0000:: 1 1 1)" "unknown mode -> auto"
 assert_contains "$(run_exit_log bogus fd0a:0d0d:0000:: 1 1 1)" 'IP6_EXIT "bogus" is not one of' "unknown mode warns"

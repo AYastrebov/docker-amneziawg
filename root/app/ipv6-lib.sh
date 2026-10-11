@@ -18,6 +18,14 @@ ip6_derive_prefix() {
     printf 'fd%02x:%02x%02x:0000::\n' "$((10#${a}))" "$((10#${b}))" "$((10#${c}))"
 }
 
+# IPv6 is opt-in: unset (or "off") keeps the container byte-for-byte on the
+# pre-IPv6 behaviour, templates and Corefile included. "auto" or a prefix
+# enables it. s6 drops empty variables, so "unset" also covers IP6_SUBNET=.
+ip6_requested() {
+    local v="${IP6_SUBNET:-}"
+    [[ -n "${v}" && "${v,,}" != "off" ]]
+}
+
 # Accepts "<1-4 hextets>::/64" (any case). Prints the lowercase prefix without
 # the /64. Returns 1 on anything else.
 ip6_validate_subnet() {
@@ -66,10 +74,14 @@ ip6_conf_ipv4() {
 ip6_resolve_subnet() {
     local requested="${IP6_SUBNET:-}" derived
     derived=$(ip6_derive_prefix "${INTERFACE}")
-    if [[ "${requested,,}" == "off" ]]; then
+    if ! ip6_requested; then
         IP6_PREFIX=""
         IP6_SUBNET_EFFECTIVE="off"
-        echo "**** IPv6 is disabled (IP6_SUBNET=off); peers get IPv4 addresses only ****"
+        if [[ -n "${requested}" ]]; then
+            echo "**** IPv6 is disabled (IP6_SUBNET=off); peers get IPv4 addresses only ****"
+        else
+            echo "**** IPv6 is disabled (default); peers get IPv4 addresses only. Set IP6_SUBNET=auto to enable it ****"
+        fi
         return 0
     fi
     # A server template whose PostUp/PostDown cannot carry the IPv6 rules
@@ -94,12 +106,12 @@ ip6_resolve_subnet() {
         fi
         return 0
     fi
-    if [[ -z "${requested}" ]]; then
+    if [[ "${requested,,}" == "auto" ]]; then
         IP6_PREFIX="${derived}"
     elif IP6_PREFIX=$(ip6_validate_subnet "${requested}"); then
         :
     else
-        echo "**** IP6_SUBNET \"${requested}\" is invalid (expected e.g. fd12:3456:789a::/64); using derived ${derived}/64 ****"
+        echo "**** IP6_SUBNET \"${requested}\" is invalid (expected auto, off or e.g. fd12:3456:789a::/64); using derived ${derived}/64 ****"
         IP6_PREFIX="${derived}"
     fi
     IP6_SUBNET_EFFECTIVE="${IP6_PREFIX}/64"
@@ -155,13 +167,28 @@ ip6_resolve_exit() {
     local intra='ip6tables -A FORWARD -i %i -o %i -j ACCEPT'
     local reject="${intra}; ip6tables -A FORWARD -i %i -j REJECT --reject-with icmp6-adm-prohibited; ip6tables -A FORWARD -o %i -j REJECT --reject-with icmp6-adm-prohibited"
     local drop="${intra}; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP"
+    # Exactly what the pre-IPv6 template hard-coded (#36), so a container
+    # with IPv6 disabled renders the same wg0.conf as before the feature.
+    local legacy='ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP'
     local masq
     mode="${mode,,}"
     IP6_POSTUP=""
     IP6_POSTDOWN=""
     if [[ -z "${IP6_PREFIX}" ]]; then
-        IP6_EXIT_EFFECTIVE="off"
-        echo "**** IPv6 exit: off (IPv6 disabled; no ip6tables rules will be applied) ****"
+        IP6_EXIT_EFFECTIVE="disabled"
+        # Without a filter table those DROPs fail PostUp and take IPv4 down,
+        # which the hard-coded template used to do; skip them there instead.
+        # A customised PostUp (template not ready) never adds them, so its
+        # placeholder-carrying PostDown must not try to delete them either.
+        if [[ "${IP6_TEMPLATE_READY:-1}" != "1" ]]; then
+            echo "**** IPv6 exit: disabled (customised PostUp/PostDown; no IPv6 rules added to them) ****"
+        elif ip6_filter_available; then
+            IP6_POSTUP="${legacy}"
+            IP6_POSTDOWN="${legacy//-A/-D}"
+            echo "**** IPv6 exit: disabled (peers' IPv6 traffic into the tunnel is dropped) ****"
+        else
+            echo "**** IPv6 exit: disabled (ip6tables filter table unavailable; no IPv6 rules applied) ****"
+        fi
         return 0
     fi
     case "${mode}" in
@@ -178,7 +205,9 @@ ip6_resolve_exit() {
         if [[ -z "${dev}" ]]; then
             mode="off"; reason="no IPv6 default route in the container"
         elif ! ip6_forwarding_enabled; then
-            mode="off"; reason="sysctl net.ipv6.conf.all.forwarding is 0"
+            # The REJECT rules never fire here: with forwarding off the kernel
+            # drops non-local packets before the FORWARD chain. Say so.
+            mode="off"; reason="sysctl net.ipv6.conf.all.forwarding is 0, so peers' IPv6 is dropped silently rather than refused - set it to 1 even without egress"
         elif ! ip6_filter_available; then
             mode="off"; reason="the ip6tables filter table is unavailable (the host kernel has no usable ip6table_filter)"
         elif ip6_is_ula "${IP6_PREFIX}"; then

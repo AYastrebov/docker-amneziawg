@@ -32,8 +32,12 @@ fi
 # IPv6 helpers (prefix derivation, exit mode, template migration, CoreDNS filter)
 # shellcheck source=../../../../app/ipv6-lib.sh
 source /app/ipv6-lib.sh
-# move IPv6 address/firewall placeholders into user templates (backwards compatibility)
-ip6_migrate_templates /config/templates/server.conf /config/templates/peer.conf
+# move IPv6 address/firewall placeholders into user templates (backwards
+# compatibility). Only once IPv6 is opted into: with it off, an existing
+# installation's templates are left exactly as they were.
+if ip6_requested; then
+    ip6_migrate_templates /config/templates/server.conf /config/templates/peer.conf
+fi
 
 # ============================================================================
 # AWG obfuscation parameter helpers
@@ -864,8 +868,11 @@ if [[ ! -f /config/coredns/Corefile ]]; then
     mkdir -p /config/coredns
     cp /defaults/Corefile /config/coredns/Corefile
 fi
-# an unmodified pre-IPv6 Corefile gets the generated/*.conf import
-ip6_migrate_corefile /config/coredns/Corefile /defaults/Corefile
+# an unmodified pre-IPv6 Corefile gets the generated/*.conf import, again
+# only once IPv6 is opted into
+if ip6_requested; then
+    ip6_migrate_corefile /config/coredns/Corefile /defaults/Corefile
+fi
 # AAAA filter for peers: active only when IPv6 exit is off. In client mode
 # IP6_EXIT_EFFECTIVE is unset; treat that as "no filter".
 ip6_write_coredns_filter "${IP6_EXIT_EFFECTIVE:-nat}" /config/coredns

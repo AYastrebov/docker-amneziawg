@@ -352,8 +352,19 @@ jobs:
           }
           fail() { echo "IPv6: $1"; docker logs awgci; docker exec awgci cat /config/wg_confs/wg0.conf /config/peer1/peer1.conf; exit 1; }
 
-          # 1. defaults
+          # 0. defaults: IPv6 is opt-in, output is the pre-IPv6 output
           start_awgci
+          docker exec awgci grep -q '^Address = 10.13.13.2$' /config/peer1/peer1.conf || fail "default: peer address not v4-only"
+          docker exec awgci grep -q '^Address = 10.13.13.1$' /config/wg_confs/wg0.conf || fail "default: server address not v4-only"
+          docker exec awgci grep -qxF 'PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP' /config/wg_confs/wg0.conf || fail "default: PostUp differs from the pre-IPv6 one"
+          docker exec awgci grep -qxF 'PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j DROP; ip6tables -D FORWARD -o %i -j DROP' /config/wg_confs/wg0.conf || fail "default: PostDown differs from the pre-IPv6 one"
+          docker exec awgci test ! -s /config/coredns/generated/ipv6.conf || fail "default: AAAA filter must be empty"
+          docker logs awgci 2>&1 | grep -q 'Set IP6_SUBNET=auto to enable it' || fail "default: opt-in hint not logged"
+          docker exec awgci grep -q '^ORIG_IP6_EXIT="disabled"$' /config/.donoteditthisfile || fail "default: IP6_EXIT not persisted as disabled"
+          echo "  defaults: IPv6 disabled, pre-IPv6 output"
+
+          # 1. IP6_SUBNET=auto
+          start_awgci -e IP6_SUBNET=auto
           docker exec awgci grep -q '^Address = 10.13.13.2,fd0a:0d0d:0000::2/128$' /config/peer1/peer1.conf || fail "peer1 lacks derived ULA address"
           docker exec awgci grep -q '^Address = 10.13.13.3,fd0a:0d0d:0000::3/128$' /config/peer2/peer2.conf || fail "peer2 lacks derived ULA address"
           docker exec awgci grep -q '^Address = 10.13.13.1,fd0a:0d0d:0000::1/128$' /config/wg_confs/wg0.conf || fail "server lacks ULA address"
@@ -366,17 +377,17 @@ jobs:
           docker logs awgci 2>&1 | grep -q 'IPv6 exit: off (no IPv6 default route' || fail "auto did not log the off reason"
           docker exec awgci grep -q '^ORIG_IP6_SUBNET="fd0a:0d0d:0000::/64"$' /config/.donoteditthisfile || fail "IP6_SUBNET not persisted"
           docker exec awgci grep -q '^ORIG_IP6_EXIT="off"$' /config/.donoteditthisfile || fail "IP6_EXIT not persisted"
-          echo "  defaults: ULA addresses, REJECT rules, AAAA filter"
+          echo "  IP6_SUBNET=auto: ULA addresses, REJECT rules, AAAA filter"
 
-          # 2. IP6_SUBNET=off -> v4-only addresses, no ip6tables rules at all
+          # 2. IP6_SUBNET=off -> same as the default
           start_awgci -e IP6_SUBNET=off
           docker exec awgci grep -q '^Address = 10.13.13.2$' /config/peer1/peer1.conf || fail "off: peer address not v4-only"
           docker exec awgci grep -q '^Address = 10.13.13.1$' /config/wg_confs/wg0.conf || fail "off: server address not v4-only"
-          if docker exec awgci grep -q 'ip6tables' /config/wg_confs/wg0.conf; then fail "off: ip6tables rules present"; fi
-          docker exec awgci grep -q '^PostUp = .*MASQUERADE$' /config/wg_confs/wg0.conf || fail "off: PostUp does not end at v4 MASQUERADE"
-          docker exec awgci grep -q '^PostDown = .*MASQUERADE$' /config/wg_confs/wg0.conf || fail "off: PostDown does not end at v4 MASQUERADE"
-          docker exec awgci grep -q 'template IN AAAA' /config/coredns/generated/ipv6.conf || fail "off: AAAA filter should still be active"
-          echo "  IP6_SUBNET=off: no IPv6 addresses or rules"
+          docker exec awgci grep -qxF 'PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP' /config/wg_confs/wg0.conf || fail "off: PostUp differs from the pre-IPv6 one"
+          docker exec awgci grep -qxF 'PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j DROP; ip6tables -D FORWARD -o %i -j DROP' /config/wg_confs/wg0.conf || fail "off: PostDown differs from the pre-IPv6 one"
+          if docker exec awgci grep -q 'icmp6-adm-prohibited' /config/wg_confs/wg0.conf; then fail "off: REJECT rules present"; fi
+          docker exec awgci test ! -s /config/coredns/generated/ipv6.conf || fail "off: AAAA filter must be empty"
+          echo "  IP6_SUBNET=off: pre-IPv6 output"
 
           # 3. user prefix
           start_awgci -e IP6_SUBNET=fd12:3456:789a::/64
@@ -390,7 +401,7 @@ jobs:
           echo "  invalid IP6_SUBNET: warned, derived prefix used"
 
           # 5. forced routed -> ACCEPT only, no NAT, no REJECT
-          start_awgci -e IP6_EXIT=routed
+          start_awgci -e IP6_SUBNET=auto -e IP6_EXIT=routed
           docker exec awgci grep -q 'ip6tables -A FORWARD -i %i -j ACCEPT' /config/wg_confs/wg0.conf || fail "routed: no ACCEPT"
           if docker exec awgci grep -qE 'ip6tables -t nat|icmp6-adm-prohibited' /config/wg_confs/wg0.conf; then fail "routed: NAT or REJECT present"; fi
           docker exec awgci test ! -s /config/coredns/generated/ipv6.conf || fail "routed: AAAA filter should be empty"
@@ -409,7 +420,14 @@ jobs:
             mkdir -p /config/coredns
             printf "%s\n" ". {" "    loop" "    errors" "    health" "    cache" "    forward . /etc/resolv.conf" "}" > /config/coredns/Corefile
           '
+          # IPv6 left off: an upgraded installation is not touched at all
           start_awgci -v awgci-cfg:/config
+          if docker logs awgci 2>&1 | grep -q 'migrated'; then fail "IPv6 off: templates must not be migrated"; fi
+          docker exec awgci grep -q 'ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE$' /config/templates/server.conf || fail "IPv6 off: template altered"
+          docker exec awgci grep -q 'ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE$' /config/wg_confs/wg0.conf || fail "IPv6 off: old template not rendered as-is"
+          if docker exec awgci grep -q 'import /config/coredns/generated' /config/coredns/Corefile; then fail "IPv6 off: Corefile altered"; fi
+          echo "  old templates with IPv6 off: untouched"
+          start_awgci -v awgci-cfg:/config -e IP6_SUBNET=auto
           docker logs awgci 2>&1 | grep -q 'migrated PostUp line' || fail "migration: PostUp not migrated"
           docker exec awgci grep -q 'fd0a:0d0d:0000::2/128' /config/peer1/peer1.conf || fail "migration: peer address missing after migration"
           docker exec awgci grep -q 'icmp6-adm-prohibited' /config/wg_confs/wg0.conf || fail "migration: REJECT missing after migration"
@@ -438,7 +456,7 @@ jobs:
           docker run --rm -v awgci-cfg:/config test-image sh -c 'sed -i "s|^PostUp = .*|PostUp = iptables -A FORWARD -i %i -j ACCEPT; /config/hook.sh|" /config/templates/server.conf'
           # Same reason as 6b: the template edit alone would not regenerate
           # wg0.conf. Back to the derived prefix, which differs from 6b's.
-          start_awgci -v awgci-cfg:/config
+          start_awgci -v awgci-cfg:/config -e IP6_SUBNET=auto
           docker logs awgci 2>&1 | grep -q 'regenerating 1 server' || fail "customised PostUp: confs were not regenerated"
           docker logs awgci 2>&1 | grep -q 'PostUp/PostDown are customised' || fail "customised PostUp not warned"
           docker exec awgci grep -q '^PostUp = iptables -A FORWARD -i %i -j ACCEPT; /config/hook.sh$' /config/wg_confs/wg0.conf || fail "customised PostUp altered"
