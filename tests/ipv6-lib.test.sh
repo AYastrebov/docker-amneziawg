@@ -89,6 +89,9 @@ assert_eq "10.13.13.2" "$(conf_addr 'Address = 10.13.13.2, fd0a:0d0d:0000::2/128
 assert_eq "10.13.13.2" "$(conf_addr 'Address = fd0a:0d0d:0000::2/128, 10.13.13.2')" "read-back: v6 first"
 assert_eq "10.13.13.2" "$(conf_addr 'Address=10.13.13.2/32')" "read-back: mask stripped, no spaces"
 assert_eq "" "$(conf_addr 'Address = fd0a:0d0d:0000::2/128')" "read-back: v6 only -> empty"
+assert_eq "10.13.13.2" "$(conf_addr 'Address = 10.13.13.2/32 # laptop')" "read-back: inline comment stripped like awg-quick"
+assert_eq "10.13.13.2" "$(conf_addr 'Address = 10.13.13.2, fd0a:0d0d:0000::2/128 #dual')" "read-back: dual with comment"
+assert_eq "" "$(conf_addr '# Address = 10.13.13.9')" "read-back: commented-out line ignored"
 
 # ---- probe overrides ---------------------------------------------------
 # The probes read the container's own netns, which the test host does not
@@ -193,6 +196,10 @@ assert_eq "" "$(ip6_conf_mtu "$MTUDIR/peer.conf")" "conf_mtu: no MTU line -> emp
 assert_eq "" "$(ip6_conf_mtu "$MTUDIR/missing.conf")" "conf_mtu: missing file -> empty, no error"
 mtu_templates "  MTU=1200  " ""
 assert_eq "1200" "$(ip6_conf_mtu "$MTUDIR/server.conf")" "conf_mtu tolerates spacing"
+mtu_templates "MTU = 1208 # DS-Lite path" ""
+assert_eq "1208" "$(ip6_conf_mtu "$MTUDIR/server.conf")" "conf_mtu strips an inline comment like awg-quick"
+mtu_templates "# MTU = 1208" ""
+assert_eq "" "$(ip6_conf_mtu "$MTUDIR/server.conf")" "conf_mtu ignores a commented-out MTU line"
 
 run_mtu() {  # -> "ready|bad"
     ip6_check_template_mtu "$MTUDIR/server.conf" "$MTUDIR/peer.conf"
@@ -212,6 +219,8 @@ mtu_templates "MTU = 1208" "MTU = 1208"
 assert_eq "0|$MTUDIR/server.conf (MTU = 1208), $MTUDIR/peer.conf (MTU = 1208)" "$(run_mtu)" "both named"
 mtu_templates "MTU = abc" ""
 assert_eq "1|" "$(run_mtu)" "non-numeric MTU is left to awg-quick"
+mtu_templates "MTU = 1208 # DS-Lite" ""
+assert_eq "0|$MTUDIR/server.conf (MTU = 1208)" "$(run_mtu)" "inline comment does not hide a too-small MTU"
 mtu_templates "MTU = 1279" ""
 assert_eq "0|$MTUDIR/server.conf (MTU = 1279)" "$(run_mtu)" "1279 is below the floor"
 

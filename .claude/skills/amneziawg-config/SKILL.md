@@ -147,7 +147,9 @@ matching peer conf). Windows refuses the address outright. So the constrained-pa
 above (1208/1188) are only usable in an **IPv4-only** conf: no IPv6 in `Address`, no `::/0`
 in `AllowedIPs`. A peer behind a ~1280 path that wants IPv6 inside the tunnel must reach the
 server over an IPv6 endpoint instead, where the path is normally 1492 and `1492 − 80 − S4`
-(1400) applies. `awg-lint.py` reports this combination as an error.
+(1400) applies. `awg-lint.py` reports this combination as an error. The one exception is
+`Table = off`: `awg-quick` then installs no routes, so `AllowedIPs` is irrelevant and the tunnel
+comes up — but an IPv6 `Address` is still stripped silently, which the linter reports as a warning.
 
 ## Which values must match
 

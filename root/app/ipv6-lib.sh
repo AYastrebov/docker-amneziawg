@@ -57,15 +57,25 @@ ip6_peer_addr() {
     printf '%s%s/128\n' "${prefix}" "${client_ip##*.}"
 }
 
+# <file> <key> -> the value of the first active "<key> = ..." line, with the
+# inline "# comment" awg-quick strips (${line%%\#*}) stripped the same way and
+# all whitespace removed. Prints nothing when there is no such line.
+ip6_conf_value() {
+    local line
+    line=$(grep -m1 -E "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null) || return 0
+    line="${line%%\#*}"
+    line="${line#*=}"
+    printf '%s\n' "${line//[[:space:]]/}"
+}
+
 # <peer conf> -> the IPv4 address on its Address line, without a mask. The
 # line may list both families in any order and with or without spaces
-# ("10.13.13.2,fd..::2/128", "fd..::2/128, 10.13.13.2"). Prints nothing when
-# there is no IPv4 address.
+# ("10.13.13.2,fd..::2/128", "fd..::2/128, 10.13.13.2") and may end in a
+# comment ("10.13.13.2/32 # laptop"). Prints nothing when there is no IPv4
+# address.
 ip6_conf_ipv4() {
     local line addr
-    line=$(grep -m1 -E '^[[:space:]]*Address[[:space:]]*=' "$1" 2>/dev/null) || return 0
-    line="${line#*=}"
-    line="${line//[[:space:]]/}"
+    line=$(ip6_conf_value "$1" Address)
     local IFS=,
     for addr in ${line}; do
         if [[ "${addr}" == *.* && "${addr}" != *:* ]]; then
@@ -85,12 +95,11 @@ IP6_MIN_MTU=1280
 
 # Prints the value of the first "MTU = N" line in a conf or template, nothing
 # when there is no MTU line (awg-quick then derives one, which is >= 1280 on
-# any ordinary link).
+# any ordinary link). "MTU = 1208 # DS-Lite" yields 1208, as it does for
+# awg-quick; keeping the comment would make the value non-numeric and let the
+# template pass the floor check it is meant to fail.
 ip6_conf_mtu() {
-    local line
-    line=$(grep -m1 -E '^[[:space:]]*MTU[[:space:]]*=' "$1" 2>/dev/null) || return 0
-    line="${line#*=}"
-    printf '%s\n' "${line//[[:space:]]/}"
+    ip6_conf_value "$1" MTU
 }
 
 # Sets IP6_MTU_READY=1 when no template pins an MTU below IP6_MIN_MTU, else 0
