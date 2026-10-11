@@ -37,6 +37,9 @@ source /app/ipv6-lib.sh
 # installation's templates are left exactly as they were.
 if ip6_requested; then
     ip6_migrate_templates /config/templates/server.conf /config/templates/peer.conf
+    # an MTU below 1280 in either template would take the tunnel down once it
+    # carries an IPv6 address; ip6_resolve_subnet keeps IPv6 off instead
+    ip6_check_template_mtu /config/templates/server.conf /config/templates/peer.conf
 fi
 
 # ============================================================================

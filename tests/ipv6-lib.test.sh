@@ -178,6 +178,57 @@ assert_eq "|off" "${log##*$'\n'}" "template not ready -> no prefix"
 assert_contains "$log" 'no ${IP6_POSTUP}/${IP6_POSTDOWN} placeholders' "template not ready: reason logged"
 unset IP6_TEMPLATE_READY
 
+# ---- template MTU floor ------------------------------------------------
+# The kernel strips IPv6 from an interface whose MTU drops under 1280, so a
+# template pinning a smaller MTU must keep IPv6 off rather than kill the tunnel.
+MTUDIR=$(mktemp -d)
+trap 'rm -rf "$MTUDIR"' EXIT
+mtu_templates() {  # <server MTU line or ""> <peer MTU line or "">
+    printf '[Interface]\nAddress = x\n%s\nPostUp = y\n' "$1" > "$MTUDIR/server.conf"
+    printf '[Interface]\nAddress = x\n%s\nDNS = z\n' "$2" > "$MTUDIR/peer.conf"
+}
+mtu_templates "MTU = 1208" ""
+assert_eq "1208" "$(ip6_conf_mtu "$MTUDIR/server.conf")" "conf_mtu reads the value"
+assert_eq "" "$(ip6_conf_mtu "$MTUDIR/peer.conf")" "conf_mtu: no MTU line -> empty"
+assert_eq "" "$(ip6_conf_mtu "$MTUDIR/missing.conf")" "conf_mtu: missing file -> empty, no error"
+mtu_templates "  MTU=1200  " ""
+assert_eq "1200" "$(ip6_conf_mtu "$MTUDIR/server.conf")" "conf_mtu tolerates spacing"
+
+run_mtu() {  # -> "ready|bad"
+    ip6_check_template_mtu "$MTUDIR/server.conf" "$MTUDIR/peer.conf"
+    printf '%s|%s' "$IP6_MTU_READY" "$IP6_MTU_BAD"
+}
+mtu_templates "" ""
+assert_eq "1|" "$(run_mtu)" "no MTU lines -> ready"
+mtu_templates "MTU = 1280" "MTU = 1280"
+assert_eq "1|" "$(run_mtu)" "1280 is the floor and passes"
+mtu_templates "MTU = 1420" "MTU = 1400"
+assert_eq "1|" "$(run_mtu)" "above the floor passes"
+mtu_templates "MTU = 1208" ""
+assert_eq "0|$MTUDIR/server.conf (MTU = 1208)" "$(run_mtu)" "server below 1280 -> not ready, file named"
+mtu_templates "" "MTU = 1188"
+assert_eq "0|$MTUDIR/peer.conf (MTU = 1188)" "$(run_mtu)" "peer below 1280 -> not ready (Linux clients fail the same way)"
+mtu_templates "MTU = 1208" "MTU = 1208"
+assert_eq "0|$MTUDIR/server.conf (MTU = 1208), $MTUDIR/peer.conf (MTU = 1208)" "$(run_mtu)" "both named"
+mtu_templates "MTU = abc" ""
+assert_eq "1|" "$(run_mtu)" "non-numeric MTU is left to awg-quick"
+mtu_templates "MTU = 1279" ""
+assert_eq "0|$MTUDIR/server.conf (MTU = 1279)" "$(run_mtu)" "1279 is below the floor"
+
+IP6_SUBNET=auto
+mtu_templates "MTU = 1208" ""
+ip6_check_template_mtu "$MTUDIR/server.conf" "$MTUDIR/peer.conf"
+log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
+assert_eq "|off" "${log##*$'\n'}" "MTU below floor -> no prefix, off"
+assert_contains "$log" "server.conf (MTU = 1208)" "MTU below floor: file and value logged"
+assert_contains "$log" "No such device" "MTU below floor: names the symptom it prevents"
+assert_contains "$log" "MTU = 1280 or higher" "MTU below floor: says how to fix"
+mtu_templates "MTU = 1280" "MTU = 1280"
+ip6_check_template_mtu "$MTUDIR/server.conf" "$MTUDIR/peer.conf"
+out=$(ip6_resolve_subnet; printf '%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
+assert_eq "fd0a:0d0d:0000::|fd0a:0d0d:0000::/64" "${out##*$'\n'}" "MTU 1280 -> IPv6 proceeds"
+unset IP6_MTU_READY IP6_MTU_BAD
+
 # ---- resolve_exit ------------------------------------------------------
 
 ACCEPT='ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -A FORWARD -o %i -j ACCEPT'

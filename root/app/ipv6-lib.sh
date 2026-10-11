@@ -6,7 +6,8 @@
 # file can be unit-tested outside the container (tests/ipv6-lib.test.sh).
 #
 # Globals consumed: IP6_SUBNET, IP6_EXIT, INTERFACE,
-#                   IP6_TEMPLATE_READY (set by ip6_migrate_templates)
+#                   IP6_TEMPLATE_READY (set by ip6_migrate_templates),
+#                   IP6_MTU_READY, IP6_MTU_BAD (set by ip6_check_template_mtu)
 # Globals produced: IP6_PREFIX, IP6_SUBNET_EFFECTIVE, IP6_EXIT_EFFECTIVE,
 #                   IP6_POSTUP, IP6_POSTDOWN
 
@@ -74,6 +75,42 @@ ip6_conf_ipv4() {
     done
 }
 
+# IPv6 needs an interface MTU of at least 1280 (RFC 8200). The kernel enforces
+# it the hard way: 'ip link set mtu 1208 dev wg0' on an interface that already
+# holds an IPv6 address removes that address, and awg-quick's next
+# 'ip -6 route add' fails with "RTNETLINK answers: No such device" - under
+# set -e that tears the whole tunnel down, IPv4 included. A peer conf below
+# 1280 does the same on a Linux client (and Windows refuses the address).
+IP6_MIN_MTU=1280
+
+# Prints the value of the first "MTU = N" line in a conf or template, nothing
+# when there is no MTU line (awg-quick then derives one, which is >= 1280 on
+# any ordinary link).
+ip6_conf_mtu() {
+    local line
+    line=$(grep -m1 -E '^[[:space:]]*MTU[[:space:]]*=' "$1" 2>/dev/null) || return 0
+    line="${line#*=}"
+    printf '%s\n' "${line//[[:space:]]/}"
+}
+
+# Sets IP6_MTU_READY=1 when no template pins an MTU below IP6_MIN_MTU, else 0
+# with IP6_MTU_BAD naming the offending file(s). Checked before IPv6 is handed
+# out so a too-small MTU costs the IPv6 feature, not the tunnel. A value that
+# is not a number is left for awg-quick to reject and counts as ready.
+ip6_check_template_mtu() {   # <template>...
+    local f mtu
+    IP6_MTU_READY=1
+    IP6_MTU_BAD=""
+    for f in "$@"; do
+        mtu=$(ip6_conf_mtu "$f")
+        [[ "${mtu}" =~ ^[0-9]+$ ]] || continue
+        if (( mtu < IP6_MIN_MTU )); then
+            IP6_MTU_READY=0
+            IP6_MTU_BAD="${IP6_MTU_BAD:+${IP6_MTU_BAD}, }${f} (MTU = ${mtu})"
+        fi
+    done
+}
+
 # Sets IP6_PREFIX ("" when IPv6 is disabled) and IP6_SUBNET_EFFECTIVE.
 # Uses the ip6_stack_enabled probe defined below: without an IPv6 stack the
 # container cannot even hold the address, so no prefix may be handed out.
@@ -97,6 +134,15 @@ ip6_resolve_subnet() {
         IP6_PREFIX=""
         IP6_SUBNET_EFFECTIVE="off"
         echo "**** IPv6 is disabled because /config/templates/server.conf has no \${IP6_POSTUP}/\${IP6_POSTDOWN} placeholders; peers get IPv4 addresses only. See README section \"IPv6\" ****"
+        return 0
+    fi
+    # A template that pins MTU below 1280 would make the kernel strip the IPv6
+    # address again as soon as awg-quick sets the MTU, and the tunnel would die
+    # on the next 'ip -6 route add' (see IP6_MIN_MTU). Behave as IP6_SUBNET=off.
+    if [[ "${IP6_MTU_READY:-1}" != "1" ]]; then
+        IP6_PREFIX=""
+        IP6_SUBNET_EFFECTIVE="off"
+        echo "**** IPv6 is disabled because ${IP6_MTU_BAD:-a template} pins the tunnel MTU below the IPv6 minimum of ${IP6_MIN_MTU}: the kernel removes IPv6 from an interface whose MTU is under 1280, so with an IPv6 address awg-quick would fail on 'ip -6 route add' with 'No such device' and take the tunnel down, on the server and on Linux clients alike. Set MTU = 1280 or higher in both templates (or drop the line) to enable IPv6; peers get IPv4 addresses only until then. See README section \"IPv6\" ****"
         return 0
     fi
     # No IPv6 stack: 'ip -6 address add' and 'ip -6 route add' would fail, and
