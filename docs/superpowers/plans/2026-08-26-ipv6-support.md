@@ -1,8 +1,16 @@
 # IPv6 Support Implementation Plan
 
+> **Superseded in part (2026-10-11).** This plan was executed, then the default
+> was changed during review of PR #47: IPv6 is **opt-in**. Unset `IP6_SUBNET`
+> (or `off`) keeps the pre-IPv6 output byte for byte; `IP6_SUBNET=auto` enables
+> the derived ULA. Every "by default" / "unset → derived" step below, the
+> smoke-test expectations built on it, and the client-compatibility merge gate
+> are superseded by the spec's "Revision" section. The architecture, library,
+> migration and exit-mode work are as implemented.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give every peer a ULA IPv6 address by default (closing the dual-stack leak), NAT66 IPv6 egress when the Docker network has IPv6, and fast-fail (ICMPv6 reject + no AAAA) when it does not.
+**Goal (as written; see the note above for the final default):** Give every peer a ULA IPv6 address by default (closing the dual-stack leak), NAT66 IPv6 egress when the Docker network has IPv6, and fast-fail (ICMPv6 reject + no AAAA) when it does not.
 
 **Architecture:** Pure decision logic (prefix derivation/validation, exit-mode resolution, template migration, CoreDNS filter) lives in a new sourceable library `root/app/ipv6-lib.sh` with a bash unit-test script that runs on any machine. `init-amneziawg-confs/run` sources the library, resolves `IP6_PREFIX` / `IP6_EXIT_EFFECTIVE` / `IP6_POSTUP` / `IP6_POSTDOWN` once at startup, and the templates consume them via `${VAR:+...}` expansion so firewall policy never lives in user-owned templates again. CI runs the unit tests and container smoke scenarios.
 

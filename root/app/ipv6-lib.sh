@@ -26,11 +26,17 @@ ip6_requested() {
     [[ -n "${v}" && "${v,,}" != "off" ]]
 }
 
-# Accepts "<1-4 hextets>::/64" (any case). Prints the lowercase prefix without
-# the /64. Returns 1 on anything else.
+# Accepts "<1-4 hextets>::/64" (any case) in fc00::/7 (ULA) or 2000::/3
+# (global unicast). Prints the lowercase prefix without the /64. Returns 1 on
+# anything else: a link-local or multicast prefix passes the syntax check but
+# cannot be assigned as a unicast address, and awg-quick would take the whole
+# tunnel down trying.
 ip6_validate_subnet() {
-    local v="${1,,}"
+    local v="${1,,}" h
     [[ "${v}" =~ ^([0-9a-f]{1,4}:){0,3}[0-9a-f]{1,4}::/64$ ]] || return 1
+    h="${v%%:*}"
+    h=$(printf '%4s' "${h}"); h="${h// /0}"   # "fd" is 00fd, not fd00
+    [[ "${h}" =~ ^(f[cd]|[23]) ]] || return 1
     printf '%s\n' "${v%/64}"
 }
 
@@ -106,12 +112,20 @@ ip6_resolve_subnet() {
         fi
         return 0
     fi
+    # No filter table: nothing could ever block or NAT peers' IPv6, and with a
+    # route and forwarding the kernel would simply forward it. Fail closed.
+    if ! ip6_filter_available; then
+        IP6_PREFIX=""
+        IP6_SUBNET_EFFECTIVE="off"
+        echo "**** IPv6 is disabled: the ip6tables filter table is unavailable in this container (the host kernel has no usable ip6table_filter), so peers' IPv6 could not be filtered; peers get IPv4 addresses only ****"
+        return 0
+    fi
     if [[ "${requested,,}" == "auto" ]]; then
         IP6_PREFIX="${derived}"
     elif IP6_PREFIX=$(ip6_validate_subnet "${requested}"); then
         :
     else
-        echo "**** IP6_SUBNET \"${requested}\" is invalid (expected auto, off or e.g. fd12:3456:789a::/64); using derived ${derived}/64 ****"
+        echo "**** IP6_SUBNET \"${requested}\" is invalid (expected auto, off, or a ULA or global /64 such as fd12:3456:789a::/64); using derived ${derived}/64 ****"
         IP6_PREFIX="${derived}"
     fi
     IP6_SUBNET_EFFECTIVE="${IP6_PREFIX}/64"
@@ -146,10 +160,11 @@ ip6_filter_available() {
 # The REJECT target is a separate module (ip6t_REJECT, or the xt compat layer
 # under iptables-nft) and cannot be listed, only used: try it in a scratch
 # chain that is removed again straight away.
+# The chain name is unique per invocation and only a chain this call created
+# is removed: on network_mode: host the table is shared with the host and
+# other containers, and a fixed name could flush someone else's rules.
 ip6_reject_available() {
-    local chain=AWG_PROBE rc=0
-    ip6tables -F "${chain}" >/dev/null 2>&1
-    ip6tables -X "${chain}" >/dev/null 2>&1
+    local chain="AWG_PROBE_$$_${RANDOM}" rc=0
     ip6tables -N "${chain}" >/dev/null 2>&1 || return 1
     ip6tables -A "${chain}" -j REJECT --reject-with icmp6-adm-prohibited >/dev/null 2>&1 || rc=1
     ip6tables -F "${chain}" >/dev/null 2>&1
@@ -199,8 +214,8 @@ ip6_resolve_exit() {
             ;;
     esac
     dev=$(ip6_default_route_dev)
-    # ip6_resolve_subnet already left IP6_PREFIX empty without an IPv6 stack,
-    # so the stack needs no second check here.
+    # ip6_resolve_subnet already left IP6_PREFIX empty without an IPv6 stack
+    # or filter table, so neither needs a second check here.
     if [[ "${mode}" == "auto" ]]; then
         if [[ -z "${dev}" ]]; then
             mode="off"; reason="no IPv6 default route in the container"
@@ -208,8 +223,6 @@ ip6_resolve_exit() {
             # The REJECT rules never fire here: with forwarding off the kernel
             # drops non-local packets before the FORWARD chain. Say so.
             mode="off"; reason="sysctl net.ipv6.conf.all.forwarding is 0, so peers' IPv6 is dropped silently rather than refused - set it to 1 even without egress"
-        elif ! ip6_filter_available; then
-            mode="off"; reason="the ip6tables filter table is unavailable (the host kernel has no usable ip6table_filter)"
         elif ip6_is_ula "${IP6_PREFIX}"; then
             # Only on the auto path: a forced nat is honoured verbatim, failure
             # and all (spec 4.2). auto must not pick a mode whose PostUp fails.
@@ -228,13 +241,10 @@ ip6_resolve_exit() {
     # kept only for a forced nat with no route, where nothing would match anyway.
     masq="ip6tables -t nat -A POSTROUTING -s ${IP6_PREFIX}/64 -o ${dev:-eth+} -j MASQUERADE"
     # off is the safe fallback, so it must never fail PostUp itself (that
-    # takes IPv4 down too): REJECT if usable, else DROP, else no rules at all.
-    if [[ "${mode}" == "off" ]]; then
-        if ! ip6_filter_available; then
-            offrules="none"
-        elif ! ip6_reject_available; then
-            offrules="drop"
-        fi
+    # takes IPv4 down too): REJECT if usable, else DROP. The filter table
+    # itself is guaranteed by ip6_resolve_subnet.
+    if [[ "${mode}" == "off" ]] && ! ip6_reject_available; then
+        offrules="drop"
     fi
     IP6_EXIT_EFFECTIVE="${mode}"
     case "${mode}" in
@@ -244,7 +254,6 @@ ip6_resolve_exit() {
             case "${offrules}" in
                 reject) IP6_POSTUP="${reject}" ;;
                 drop)   IP6_POSTUP="${drop}" ;;
-                none)   IP6_POSTUP="" ;;
             esac
             ;;
     esac
@@ -259,10 +268,9 @@ ip6_resolve_exit() {
             else
                 echo "**** IPv6 exit: off (IP6_EXIT=off). Peers get IPv6 addresses but IPv6 traffic is rejected ****"
             fi
-            case "${offrules}" in
-                drop) echo "**** IPv6 exit: the ip6tables REJECT target is unavailable; peers' IPv6 traffic is dropped instead (IPv6 connections time out rather than fail fast unless peers use the built-in DNS) ****" ;;
-                none) echo "**** IPv6 exit: the ip6tables filter table is unavailable; no IPv6 firewall rules are applied. Peers' IPv6 traffic has no route out, but nothing filters it either ****" ;;
-            esac
+            if [[ "${offrules}" == "drop" ]]; then
+                echo "**** IPv6 exit: the ip6tables REJECT target is unavailable; peers' IPv6 traffic is dropped instead (IPv6 connections time out rather than fail fast unless peers use the built-in DNS) ****"
+            fi
             ;;
     esac
 }
@@ -284,12 +292,25 @@ IP6_NEW_POSTDOWN='PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FO
 IP6_OLD_PEER_ADDRESS='Address = ${CLIENT_IP}'
 IP6_NEW_PEER_ADDRESS='Address = ${CLIENT_IP}${CLIENT_IP6:+,${CLIENT_IP6}}'
 
-# <file> <new line> <marker> <label> <old line>...
+# <file> <key> <marker> -> true when an active "<key> = ..." line carries the
+# marker. A comment or an unrelated line mentioning the placeholder must not
+# count, or a template would pass as migrated while its real PostUp has none.
+ip6_key_has_marker() {
+    local file=$1 key=$2 marker=$3 line
+    [[ -f "${file}" ]] || return 1
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        [[ "${line}" =~ ^[[:space:]]*${key}[[:space:]]*= ]] || continue
+        [[ "${line}" == *"${marker}"* ]] && return 0
+    done < "${file}"
+    return 1
+}
+
+# <file> <new line> <marker> <key> <old line>...
 ip6_migrate_line() {
     local file=$1 new=$2 marker=$3 label=$4 old line tmp
     shift 4
     [[ -f "${file}" ]] || return 0
-    if grep -Fq -- "${marker}" "${file}"; then
+    if ip6_key_has_marker "${file}" "${label}" "${marker}"; then
         return 0
     fi
     for old in "$@"; do
@@ -312,12 +333,13 @@ ip6_migrate_line() {
     return 0
 }
 
-# <file> <marker> <old line>... -> true when the line already carries the
-# marker or is one of the known old lines, i.e. ip6_migrate_line can handle it.
+# <file> <key> <marker> <old line>... -> true when the active <key> line
+# already carries the marker or is one of the known old lines, i.e.
+# ip6_migrate_line can handle it.
 ip6_line_migratable() {
-    local file=$1 marker=$2 old
-    shift 2
-    grep -Fq -- "${marker}" "${file}" && return 0
+    local file=$1 key=$2 marker=$3 old
+    shift 3
+    ip6_key_has_marker "${file}" "${key}" "${marker}" && return 0
     for old in "$@"; do
         grep -Fxq -- "${old}" "${file}" && return 0
     done
@@ -336,10 +358,16 @@ ip6_migrate_templates() {
     # alone leaves PostDown deleting rules PostUp never added (awg-quick down
     # fails), or PostUp adding rules PostDown never removes.
     if [[ -f "${server}" ]]; then
-        if ip6_line_migratable "${server}" '${IP6_POSTUP'   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}" &&
-           ip6_line_migratable "${server}" '${IP6_POSTDOWN' "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"; then
+        if ip6_line_migratable "${server}" PostUp   '${IP6_POSTUP'   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}" &&
+           ip6_line_migratable "${server}" PostDown '${IP6_POSTDOWN' "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"; then
             ip6_migrate_line "${server}" "${IP6_NEW_POSTUP}"   '${IP6_POSTUP'   'PostUp'   "${IP6_OLD_POSTUP_ACCEPT}"   "${IP6_OLD_POSTUP_DROP}"
             ip6_migrate_line "${server}" "${IP6_NEW_POSTDOWN}" '${IP6_POSTDOWN' 'PostDown' "${IP6_OLD_POSTDOWN_ACCEPT}" "${IP6_OLD_POSTDOWN_DROP}"
+            # Belt and braces: the active lines must carry the placeholders now.
+            if ! ip6_key_has_marker "${server}" PostUp '${IP6_POSTUP' ||
+               ! ip6_key_has_marker "${server}" PostDown '${IP6_POSTDOWN'; then
+                IP6_TEMPLATE_READY=0
+                echo "**** ${server}: PostUp/PostDown still lack the \${IP6_POSTUP}/\${IP6_POSTDOWN} placeholders after migration; IPv6 is disabled. See README section \"IPv6\" ****"
+            fi
         else
             IP6_TEMPLATE_READY=0
             echo "**** ${server}: PostUp/PostDown are customised and do not both carry the \${IP6_POSTUP}/\${IP6_POSTDOWN} placeholders; both were left alone and IPv6 is disabled. See README section \"IPv6\" ****"
@@ -383,7 +411,8 @@ template IN AAAA . {
     rcode NOERROR
 }
 EOF
-        if [[ -f "${dir}/Corefile" ]] && ! grep -Fq -- "${IP6_COREDNS_IMPORT}" "${dir}/Corefile"; then
+        # An active directive, not a commented-out one
+        if [[ -f "${dir}/Corefile" ]] && ! grep -Eq '^[[:space:]]*import[[:space:]]+/config/coredns/generated/\*\.conf([[:space:]]|$)' "${dir}/Corefile"; then
             echo "**** ${dir}/Corefile has no '${IP6_COREDNS_IMPORT}' line; AAAA filtering for peers is not active. Add that line inside the server block to enable it ****"
         fi
     else

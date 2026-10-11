@@ -56,6 +56,16 @@ assert_fail "non-hex" ip6_validate_subnet 'fdzz::/64'
 assert_fail "hextet too long" ip6_validate_subnet 'fd123:4::/64'
 assert_fail "empty" ip6_validate_subnet ''
 assert_fail "off is not a prefix" ip6_validate_subnet 'off'
+# only fc00::/7 and 2000::/3: anything else cannot be a unicast interface address
+assert_eq "fc00:1::" "$(ip6_validate_subnet 'fc00:1::/64')" "fc00::/7 low half accepted"
+assert_eq "3fff:1::" "$(ip6_validate_subnet '3fff:1::/64')" "2000::/3 top accepted"
+assert_eq "2a01:4f8:1::" "$(ip6_validate_subnet '2a01:4f8:1::/64')" "short first hextet GUA accepted"
+assert_fail "link-local fe80::/64" ip6_validate_subnet 'fe80::/64'
+assert_fail "multicast ff00::/64" ip6_validate_subnet 'ff00::/64'
+assert_fail "unspecified ::/64 (no hextet)" ip6_validate_subnet '::/64'
+assert_fail "fd::/64 is 00fd, not ULA" ip6_validate_subnet 'fd::/64'
+assert_fail "2::/64 is 0002, not GUA" ip6_validate_subnet '2::/64'
+assert_fail "4000::/64 outside 2000::/3" ip6_validate_subnet '4000::/64'
 
 # ---- ULA test ----------------------------------------------------------
 if ip6_is_ula 'fd0a:0d0d:0000::'; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "FAIL: fd is ULA"; fi
@@ -84,6 +94,8 @@ assert_eq "" "$(conf_addr 'Address = fd0a:0d0d:0000::2/128')" "read-back: v6 onl
 # The probes read the container's own netns, which the test host does not
 # have. Override them all up front so every resolver test is deterministic;
 # the defaults describe a host with a full IPv6 stack.
+# Keep the real REJECT probe reachable under another name for its own test.
+eval "$(declare -f ip6_reject_available | sed '1s/^ip6_reject_available/real_ip6_reject_available/')"
 stack=1; route=0; fwd=0; natok=1; filterok=1; rejectok=1; routedev=eth0
 ip6_stack_enabled()     { [[ $stack == 1 ]]; }
 ip6_default_route_dev() { if [[ $route == 1 ]]; then echo "$routedev"; fi; }
@@ -145,6 +157,17 @@ log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFEC
 assert_eq "|off" "${log##*$'\n'}" "no stack + off -> off"
 assert_contains "$log" 'IP6_SUBNET=off' "off is reported as off, not as a missing stack"
 stack=1
+
+# no filter table: nothing could block peers' IPv6, so none is handed out
+filterok=0
+IP6_SUBNET=auto
+log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
+assert_eq "|off" "${log##*$'\n'}" "no filter table -> no prefix (fail closed)"
+assert_contains "$log" 'ip6table_filter' "no filter table: reason names the module"
+IP6_SUBNET='2001:db8:1::/64'
+log=$(ip6_resolve_subnet 2>&1; printf '\n%s|%s' "$IP6_PREFIX" "$IP6_SUBNET_EFFECTIVE")
+assert_eq "|off" "${log##*$'\n'}" "no filter table beats an explicit GUA prefix"
+filterok=1
 
 # server template could not take the IPv6 placeholders: same as off
 IP6_SUBNET=auto
@@ -244,13 +267,27 @@ assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 0 1)" 'REJECT target is 
 assert_eq "off|${DROPR}|${DROPR//-A/-D}" \
     "$(run_exit off fd0a:0d0d:0000:: 1 1 1)" "forced off without REJECT target -> DROP"
 rejectok=1
-filterok=0
-assert_eq "off||" "$(run_exit auto fd0a:0d0d:0000:: 1 0 1)" "off without filter table -> no rules"
-assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 0 1)" 'filter table is unavailable' "no-filter fallback logged"
-assert_eq "off||" "$(run_exit auto fd0a:0d0d:0000:: 1 1 1)" "auto: route+fwd but no filter table -> off, no rules"
-assert_eq "off||" "$(run_exit auto 2001:db8:1:: 1 1 1)" "auto: routed needs the filter table too"
-assert_contains "$(run_exit_log auto fd0a:0d0d:0000:: 1 1 1)" 'ip6table_filter' "off reason names ip6table_filter"
-filterok=1
+
+# REJECT probe: a unique scratch chain, created before anything is touched and
+# the only thing removed. A fixed name pre-flushed on network_mode: host could
+# wipe a chain that belongs to the host or another container.
+PROBE_CALLS=()
+# shellcheck disable=SC2317  # mock, invoked indirectly by the probe
+ip6tables() { PROBE_CALLS+=("$*"); return 0; }
+real_ip6_reject_available; probe_rc=$?
+assert_eq "0" "$probe_rc" "probe succeeds when ip6tables accepts REJECT"
+assert_eq "-N" "${PROBE_CALLS[0]%% *}" "probe's first call creates the chain (no pre-flush)"
+probe_chain="${PROBE_CALLS[0]#-N }"
+assert_contains "$probe_chain" 'AWG_PROBE_' "probe chain is namespaced"
+if [[ "$probe_chain" == "AWG_PROBE" ]]; then FAIL=$((FAIL+1)); echo "FAIL: probe chain must not be the fixed name AWG_PROBE"; else PASS=$((PASS+1)); fi
+assert_eq "-F $probe_chain|-X $probe_chain" "${PROBE_CALLS[2]}|${PROBE_CALLS[3]}" "probe removes only the chain it created"
+for c in "${PROBE_CALLS[@]}"; do [[ "$c" == *"$probe_chain"* ]] || { FAIL=$((FAIL+1)); echo "FAIL: probe touched something else: $c"; }; done
+PROBE_CALLS=()
+# shellcheck disable=SC2317  # mock, invoked indirectly by the probe
+ip6tables() { PROBE_CALLS+=("$*"); [[ "$1" == "-N" ]] && return 1; return 0; }
+assert_fail "probe fails when the chain cannot be created" real_ip6_reject_available
+assert_eq "1" "${#PROBE_CALLS[@]}" "failed -N leaves nothing to clean up"
+unset -f ip6tables
 
 # ---- template migration ------------------------------------------------
 
@@ -342,6 +379,18 @@ ip6_migrate_templates "$TMPD/half.conf" "$TMPD/peer.conf" > /dev/null
 assert_eq "1" "$IP6_TEMPLATE_READY" "placeholder PostUp + old PostDown -> ready"
 assert_contains "$(cat "$TMPD/half.conf")" 'MASQUERADE${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}' "PostDown migrated next to a placeholder PostUp"
 
+# the placeholder only counts on the active PostUp/PostDown lines
+old_server "$TMPD/comment.conf"
+sed -i.bak 's|^PostUp = .*|PostUp = iptables -A FORWARD -i %i -j ACCEPT; /config/my-hook.sh|' "$TMPD/comment.conf"
+printf '# TODO add ${IP6_POSTUP} and ${IP6_POSTDOWN} here\n' >> "$TMPD/comment.conf"
+ip6_migrate_templates "$TMPD/comment.conf" "$TMPD/peer.conf" > /dev/null
+assert_eq "0" "$IP6_TEMPLATE_READY" "marker in a comment does not make the template ready"
+assert_eq "1" "$(grep -c 'ip6tables -D FORWARD -i %i -j ACCEPT' "$TMPD/comment.conf")" "comment marker: PostDown left alone"
+old_server "$TMPD/commentaddr.conf"
+printf '# ${SERVER_IP6} is set when IPv6 is on\n' >> "$TMPD/commentaddr.conf"
+ip6_migrate_templates "$TMPD/commentaddr.conf" "$TMPD/peer.conf" > /dev/null
+assert_contains "$(cat "$TMPD/commentaddr.conf")" 'Address = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}' "comment marker: Address still migrated"
+
 # user already added the placeholder to a customised line: silent
 printf 'PostUp = my-fw.sh${IP6_POSTUP:+; ${IP6_POSTUP}}\nAddress = ${INTERFACE}.1${SERVER_IP6:+,${SERVER_IP6}}\nPostDown = x${IP6_POSTDOWN:+; ${IP6_POSTDOWN}}\n' > "$TMPD/marker.conf"
 ip6_migrate_templates "$TMPD/marker.conf" "$TMPD/peer.conf" > "$TMPD/log"
@@ -363,6 +412,12 @@ assert_eq "0" "$(ip6_write_coredns_filter routed "$CD"; wc -c < "$CD/generated/i
 printf '. {\n    import /config/coredns/generated/*.conf\n    forward . /etc/resolv.conf\n}\n' > "$CD/Corefile"
 log=$(ip6_write_coredns_filter off "$CD")
 assert_eq "" "$log" "Corefile with import -> no hint"
+printf '. {\n    # import /config/coredns/generated/*.conf\n    forward . /etc/resolv.conf\n}\n' > "$CD/Corefile"
+log=$(ip6_write_coredns_filter off "$CD")
+assert_contains "$log" 'has no' "commented-out import still gets the hint"
+printf '. {\n\timport /config/coredns/generated/*.conf\n    forward . /etc/resolv.conf\n}\n' > "$CD/Corefile"
+log=$(ip6_write_coredns_filter off "$CD")
+assert_eq "" "$log" "tab-indented import is active"
 
 rm -rf "$CD"; mkdir -p "$CD"
 log=$(ip6_write_coredns_filter off "$CD")

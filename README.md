@@ -144,7 +144,7 @@ docker run -d \
 | `-e PEERS=3` | Number or comma-separated names (`laptop,phone`). Enables server mode |
 | `-e PEERDNS=auto` | DNS for peers. `auto` = container's CoreDNS at subnet.1 |
 | `-e INTERNAL_SUBNET=10.13.13.0` | VPN subnet (.1 = server, .2+ = peers) |
-| `-e ALLOWEDIPS=0.0.0.0/0, ::/0` | Traffic peers route into the tunnel. Keep `::/0` so IPv6 enters the tunnel instead of leaking around it. Narrow to specific subnets for split tunnelling |
+| `-e ALLOWEDIPS=0.0.0.0/0, ::/0` | Traffic peers route into the tunnel. Keep `::/0`, but note it only stops IPv6 leaking around the tunnel once `IP6_SUBNET` is set and the peer has imported its regenerated conf: without a tunnel IPv6 address most clients ignore the `::/0` route and use native IPv6. Narrow to specific subnets for split tunnelling |
 | `-e IP6_SUBNET=` | IPv6 inside the tunnel, **off by default**. `auto` = ULA derived from `INTERNAL_SUBNET` (`10.13.13.0` → `fd0a:0d0d:0000::/64`), or your own `<prefix>::/64`. Unset or `off` keeps IPv4-only peers. See [IPv6](#ipv6) |
 | `-e IP6_EXIT=auto` | With IPv6 enabled, what the server does with peers' IPv6 traffic: `auto` (NAT when the container has IPv6, otherwise reject), `nat`, `routed`, `off` |
 | `-e PERSISTENTKEEPALIVE_PEERS=` | Which peers get keepalive: `all` or comma-separated names/numbers |

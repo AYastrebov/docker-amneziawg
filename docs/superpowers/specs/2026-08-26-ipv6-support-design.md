@@ -83,17 +83,39 @@ must be migrated (§4.3).
 
 ## 4. Design
 
+> **Revision (2026-10-11, PR #47 review).** The original design made IPv6
+> default-on with `IP6_SUBNET=off` as the only escape. During review the
+> default was flipped: **IPv6 is opt-in** (`IP6_SUBNET=auto` or a prefix), so an
+> upgrade changes nothing for an existing installation until the operator
+> asks for it. Consequences, applied throughout the implementation:
+> - §4.1: unset ≡ `off`; `auto` is the new spelling of the derived ULA.
+> - §4.3: templates and the Corefile are migrated only once IPv6 is requested;
+>   `PostUp`/`PostDown` migrate as a pair or not at all, and a customised pair
+>   disables IPv6 rather than leaving peers' IPv6 unmanaged.
+> - §4.2: `auto` never selects a mode whose `PostUp` could fail, and `off`
+>   degrades REJECT → DROP. Without `ip6table_filter` no prefix is handed out
+>   at all (fail closed), since nothing could block the traffic.
+> - §6: the client-compatibility check is no longer a merge gate, because an
+>   unsupported `Address` shape only affects operators who opted in.
+> - A fast ICMPv6 refusal in `off` needs `net.ipv6.conf.all.forwarding=1`;
+>   with forwarding off the kernel drops peers' IPv6 silently. Documented,
+>   not fixed (a `prohibit` policy route is a possible follow-up).
+> Statements below that say "by default" describe the original design.
+
 ### 4.1 Addressing
 
 | `IP6_SUBNET` value | effect |
 |---|---|
-| unset | prefix derived from `INTERNAL_SUBNET`: octets `a.b.c` → `fdAA:BBCC:0000::/64` in hex, e.g. `10.13.13.0` → `fd0a:0d0d:0000::/64`. Deterministic, no persisted state, distinct per container. |
-| `<prefix>::/64` | user prefix, ULA or GUA. |
-| `off` | no IPv6 anywhere. Output is byte-identical to the pre-feature container. |
+| unset or `off` (**default**) | no IPv6 anywhere. Output is byte-identical to the pre-feature container, including #36's `ip6tables DROP` pair (skipped when the host has no `ip6table_filter`, where the hard-coded rules used to fail `PostUp`). Templates and Corefile are not migrated. |
+| `auto` | prefix derived from `INTERNAL_SUBNET`: octets `a.b.c` → `fdAA:BBCC:0000::/64` in hex, e.g. `10.13.13.0` → `fd0a:0d0d:0000::/64`. Deterministic, no persisted state, distinct per container. |
+| `<prefix>::/64` | user prefix, ULA (`fc00::/7`) or global unicast (`2000::/3`). |
 
 Validation of a user prefix: must match `^[0-9a-fA-F:]+::/64$`, must contain no
-`:::`, and must have at most 4 hextets before the `::`. Anything else logs
-`**** IP6_SUBNET "<value>" is invalid (expected e.g. fd12:3456:789a::/64); using derived <prefix> ****`
+`:::`, must have at most 4 hextets before the `::`, and must be in `fc00::/7`
+or `2000::/3` (a link-local or multicast prefix passes the syntax but cannot be
+assigned as a unicast address, and `awg-quick` would take the tunnel down).
+Anything else logs
+`**** IP6_SUBNET "<value>" is invalid (expected auto, off, or a ULA or global /64 such as fd12:3456:789a::/64); using derived <prefix> ****`
 and falls back to the derived ULA. A bad value never produces a broken conf.
 `/64` is the only accepted length: it keeps address math to string
 concatenation.
@@ -313,9 +335,9 @@ CI (`docker-build.yml` smoke, runners have no IPv6):
 Client compatibility gate (before the PR leaves draft): the regenerated peer
 conf now carries `Address = 10.13.14.2,fd0a:0d0e:0000::2/128`. Import it into
 the Amnezia app (iOS and Android) and into a Keenetic via awg-manager's NDMS
-import, and confirm the tunnel comes up. If either rejects the comma-separated
-`Address`, stop: the default-on decision has to be revisited, since
-`IP6_SUBNET=off` is the only escape and it is not a default.
+import, and confirm the tunnel comes up. *Revision:* with IPv6 opt-in this is
+no longer a merge gate; a client that rejects the comma-separated `Address`
+should be named in the README instead.
 
 VPS (webdock, real IPv6, Docker 29): on the `amneziawg-31` stack only. Note
 this stack still runs the **pre-#36** template generation (`ip6tables ACCEPT
