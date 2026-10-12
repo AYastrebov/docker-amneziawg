@@ -19,8 +19,8 @@ if ip link add dev test type amneziawg 2>/dev/null; then
     fi
 elif [[ -x /usr/bin/amneziawg-go ]]; then
     echo "**** No amneziawg kernel module available, using userspace amneziawg-go ****"
-    mkdir -p /run/s6-overlay/container_environment
-    printf "amneziawg-go" > /run/s6-overlay/container_environment/WG_QUICK_USERSPACE_IMPLEMENTATION
+    # with-contenv reads /run/s6/container_environment in s6-overlay v3
+    printf "amneziawg-go" > /run/s6/container_environment/WG_QUICK_USERSPACE_IMPLEMENTATION
 else
     echo "**** The amneziawg kernel module is not active and amneziawg-go is not available. ****"
     echo "**** If you believe that your kernel should have amneziawg support already, make sure that it is activated via modprobe! ****"
