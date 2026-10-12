@@ -59,7 +59,7 @@ init-amneziawg-module (oneshot) -> init-amneziawg-confs (oneshot) -> svc-amnezia
 
 Key points:
 - `svc-amneziawg` is a **oneshot** — tunnels stay up without a running process
-- `svc-dnsmasq` is a **longrun** — serves DNS for peers; starts after the tunnel so wg0 has its address. Base config is generated into `/run/dnsmasq/dnsmasq.conf` each start; users customise via `/config/dnsmasq/*.conf`
+- `svc-dnsmasq` is a **longrun** — serves DNS for peers; starts after the tunnel step (even if the tunnel failed; `bind-dynamic` picks wg0 up whenever it appears). Base config is generated into `/run/dnsmasq/dnsmasq.conf` each start; users customise via `/config/dnsmasq/*.conf`
 - Dependencies: empty files in `dependencies.d/`. Registration: empty files in `user/contents.d/`
 
 ### Script Requirements

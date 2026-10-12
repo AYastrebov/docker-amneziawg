@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- **Breaking:** CoreDNS is replaced by dnsmasq, shrinking the image by about 80 MiB. dnsmasq forwards to the container's `/etc/resolv.conf` as CoreDNS did (Docker container names still resolve), but listens only on the tunnel address, not on eth0. `USE_COREDNS` is replaced by `USE_DNS` (same defaults); `/config/coredns/Corefile` is no longer read and nothing is migrated: put split-DNS or override rules into `*.conf` files in `/config/dnsmasq/`. The startup log points out a leftover `/config/coredns`, which can be deleted. dnsmasq now starts after the tunnel instead of before it.
+- **Breaking:** CoreDNS is replaced by dnsmasq, shrinking the image by about 80 MiB. dnsmasq forwards to the container's `/etc/resolv.conf` as CoreDNS did (Docker container names still resolve), but listens only on the tunnel address, not on eth0. `USE_COREDNS` is replaced by `USE_DNS` (same defaults); `/config/coredns/Corefile` is no longer read and nothing is migrated: put split-DNS or override rules into `*.conf` files in `/config/dnsmasq/`. A leftover `/config/coredns` is removed on start when it holds only the shipped defaults (every earlier release created it); a customised one is kept and pointed out in the log. dnsmasq now starts after the tunnel step instead of before it, and the port-53 auto-disable only triggers for a wildcard or loopback listener, so `systemd-resolved` on `127.0.0.53` under `network_mode: host` no longer switches peer DNS off.
 
 ### Fixed
 - `USE_COREDNS=false` in client mode never reached the DNS service (wrong s6 environment path), so CoreDNS ran on port 53 in client mode.

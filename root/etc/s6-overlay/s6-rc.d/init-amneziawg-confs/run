@@ -721,10 +721,7 @@ DUDE
 # client mode names its tunnels after the user's conf files, and whoever
 # opts into USE_DNS=true there serves other containers or the LAN.
 write_dnsmasq_conf () {
-    local filter listen=""
-    filter=$(ip6_dns_filter "$1")
-    [[ -n "$2" ]] && listen="interface=$2"$'\n'
-    [[ -n "${filter}" ]] && filter+=$'\n'
+    local listen=${2:+interface=$2$'\n'}
     mkdir -p /run/dnsmasq /config/dnsmasq
     if [[ ! -f /config/dnsmasq/README ]]; then
         cat <<'DUDE' > /config/dnsmasq/README
@@ -751,8 +748,48 @@ resolv-file=/etc/resolv.conf
 dns-loop-detect
 no-hosts
 cache-size=1000
-${filter}conf-dir=/config/dnsmasq,*.conf
+$(ip6_dns_filter "$1")
+conf-dir=/config/dnsmasq,*.conf
 DUDE
+}
+
+# CoreDNS was replaced by dnsmasq. Every earlier release created
+# /config/coredns on every start, so its presence alone says nothing about
+# the user: remove it when it holds only what the container shipped (an
+# unmodified default Corefile, either generation, and the generated/ filter
+# dir), and only warn about a customised one.
+cleanup_legacy_coredns () {
+    local dir=/config/coredns f keep=0
+    [[ -d "${dir}" ]] || return 0
+    local default_pre_ipv6='. {
+    loop
+    errors
+    health
+    cache
+    forward . /etc/resolv.conf
+}'
+    local default_ipv6='. {
+    loop
+    errors
+    health
+    cache
+    import /config/coredns/generated/*.conf
+    forward . /etc/resolv.conf
+}'
+    while IFS= read -r -d '' f; do
+        case "${f#"${dir}"/}" in
+            Corefile)
+                [[ "$(cat "${f}")" == "${default_pre_ipv6}" || "$(cat "${f}")" == "${default_ipv6}" ]] || keep=1 ;;
+            generated|generated/ipv6.conf) ;;
+            *) keep=1 ;;
+        esac
+    done < <(find "${dir}" -mindepth 1 -print0)
+    if [[ "${keep}" == 1 ]]; then
+        echo "**** /config/coredns is no longer used (CoreDNS was replaced by dnsmasq); it was customised, so it is left in place and can be deleted. Custom DNS settings go into /config/dnsmasq/*.conf ****"
+    else
+        rm -rf "${dir}"
+        echo "**** Removed /config/coredns: CoreDNS was replaced by dnsmasq and the directory held only the shipped defaults. Custom DNS settings go into /config/dnsmasq/*.conf ****"
+    fi
 }
 
 save_vars () {
@@ -920,9 +957,7 @@ fi
 if [[ -n "${USE_COREDNS:-}" ]]; then
     echo "**** USE_COREDNS is no longer read (CoreDNS was replaced by dnsmasq). Use USE_DNS instead ****"
 fi
-if [[ -d /config/coredns ]]; then
-    echo "**** /config/coredns is no longer used (CoreDNS was replaced by dnsmasq) and can be deleted. Custom DNS settings go into /config/dnsmasq/*.conf ****"
-fi
+cleanup_legacy_coredns
 
 # let openresolv take control of resolv.conf
 resolvconf -a control 2>/dev/null < /etc/resolv.conf

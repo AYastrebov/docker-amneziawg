@@ -3,11 +3,14 @@
 
 # USE_DNS unset means "on unless something else already has port 53" (e.g.
 # Pi-hole with host networking). Client mode writes USE_DNS=false unless the
-# user set it.
+# user set it, so this probe only runs in server mode, where dnsmasq binds
+# the wg0 address plus loopback (interface=wg0 adds lo). Only a wildcard or
+# loopback listener conflicts with that: systemd-resolved on 127.0.0.53 under
+# network_mode: host does not, and must not disable peer DNS.
 # Listening sockets only: a TIME_WAIT left by a previous dnsmasq (s6
 # restarts it) is not a conflict.
-if netstat -lntu | grep -q ":53 " && [[ -z "${USE_DNS}" ]]; then
-    echo "**** Port 53 is already in use, disabling dnsmasq. Set USE_DNS=true to force it ****"
+if [[ -z "${USE_DNS}" ]] && netstat -lntu | awk '{print $4}' | grep -qE '^(0\.0\.0\.0|127\.0\.0\.1|::|::1):53$'; then
+    echo "**** Port 53 is already bound on a wildcard or loopback address, disabling dnsmasq: peers on PEERDNS=auto have no DNS. Set USE_DNS=true to force it, or PEERDNS to a public resolver ****"
     USE_DNS="false"
 fi
 
