@@ -1,0 +1,25 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+
+# USE_DNS unset means "on unless something else already has port 53" (e.g.
+# Pi-hole with host networking). Client mode writes USE_DNS=false unless the
+# user set it.
+if netstat -apn | grep -q ":53 " && [[ -z "${USE_DNS}" ]]; then
+    echo "**** Port 53 is already in use, disabling dnsmasq. Set USE_DNS=true to force it ****"
+    USE_DNS="false"
+fi
+
+if [[ "${USE_DNS,,}" == "false" ]]; then
+    echo "**** Disabling dnsmasq ****"
+    exec sleep infinity
+fi
+
+# Do not exec dnsmasq with a config it rejects (usually a broken drop-in in
+# /config/dnsmasq): s6 would restart-loop it and bury the reason in the churn.
+# The tunnel stays up either way.
+if ! dnsmasq --test -C /run/dnsmasq/dnsmasq.conf; then
+    echo "**** dnsmasq rejected its config (see above), DNS for peers is down. Fix or remove the offending /config/dnsmasq/*.conf and restart ****"
+    exec sleep infinity
+fi
+
+exec dnsmasq -C /run/dnsmasq/dnsmasq.conf

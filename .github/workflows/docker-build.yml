@@ -215,7 +215,7 @@ jobs:
           docker run --rm test-image sh -c '
             test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-module/type && echo "init-amneziawg-module: OK"
             test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/type && echo "init-amneziawg-confs: OK"
-            test -f /etc/s6-overlay/s6-rc.d/svc-coredns/type && echo "svc-coredns: OK"
+            test -f /etc/s6-overlay/s6-rc.d/svc-dnsmasq/type && echo "svc-dnsmasq: OK"
             test -f /etc/s6-overlay/s6-rc.d/svc-amneziawg/type && echo "svc-amneziawg: OK"
             test -f /etc/s6-overlay/s6-rc.d/init-adduser/branding && echo "branding: OK"
           '
@@ -226,7 +226,7 @@ jobs:
           docker run --rm test-image sh -c '
             echo "init-amneziawg-module: $(cat /etc/s6-overlay/s6-rc.d/init-amneziawg-module/type)"
             echo "init-amneziawg-confs: $(cat /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/type)"
-            echo "svc-coredns: $(cat /etc/s6-overlay/s6-rc.d/svc-coredns/type)"
+            echo "svc-dnsmasq: $(cat /etc/s6-overlay/s6-rc.d/svc-dnsmasq/type)"
             echo "svc-amneziawg: $(cat /etc/s6-overlay/s6-rc.d/svc-amneziawg/type)"
           '
           echo "- Service types verified" >> "$GITHUB_STEP_SUMMARY"
@@ -236,12 +236,14 @@ jobs:
           docker run --rm test-image sh -c '
             test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-module/dependencies.d/init-config && echo "module depends on init-config: OK"
             test -f /etc/s6-overlay/s6-rc.d/init-amneziawg-confs/dependencies.d/init-amneziawg-module && echo "confs depends on module: OK"
-            test -f /etc/s6-overlay/s6-rc.d/svc-coredns/dependencies.d/init-services && echo "coredns depends on init-services: OK"
-            # Without this CoreDNS can start before the Corefile is written and
-            # fall back to its built-in whoami config (empty answers to every query)
-            test -f /etc/s6-overlay/s6-rc.d/svc-coredns/dependencies.d/init-amneziawg-confs && echo "coredns depends on confs: OK" \
-              || { echo "svc-coredns must depend on init-amneziawg-confs"; exit 1; }
-            test -f /etc/s6-overlay/s6-rc.d/svc-amneziawg/dependencies.d/svc-coredns && echo "amneziawg depends on coredns: OK"
+            test -f /etc/s6-overlay/s6-rc.d/svc-dnsmasq/dependencies.d/init-services && echo "dnsmasq depends on init-services: OK"
+            # dnsmasq starts once wg0 has its address; started earlier it races
+            # awg-quick. It also needs the base config init-amneziawg-confs writes,
+            # which this dependency covers transitively.
+            test -f /etc/s6-overlay/s6-rc.d/svc-dnsmasq/dependencies.d/svc-amneziawg && echo "dnsmasq depends on amneziawg: OK" \
+              || { echo "svc-dnsmasq must depend on svc-amneziawg"; exit 1; }
+            test ! -e /etc/s6-overlay/s6-rc.d/svc-amneziawg/dependencies.d/svc-dnsmasq \
+              || { echo "svc-amneziawg must not depend on svc-dnsmasq (dependency cycle)"; exit 1; }
           '
           echo "- Dependency chain correct" >> "$GITHUB_STEP_SUMMARY"
 
@@ -251,15 +253,15 @@ jobs:
             test -x /app/show-peer && echo "show-peer: executable"
             test -f /defaults/server.conf && echo "server.conf template: present"
             test -f /defaults/peer.conf && echo "peer.conf template: present"
-            test -f /defaults/Corefile && echo "Corefile: present"
             test -f /build_version && cat /build_version
           '
           echo "- All defaults present" >> "$GITHUB_STEP_SUMMARY"
 
-          # Check CoreDNS binary
-          echo "### CoreDNS" >> "$GITHUB_STEP_SUMMARY"
-          docker run --rm test-image which coredns
-          echo "- CoreDNS binary present" >> "$GITHUB_STEP_SUMMARY"
+          # Check dnsmasq binary (and that CoreDNS is gone)
+          echo "### dnsmasq" >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm test-image dnsmasq --version | head -1
+          docker run --rm test-image sh -c '! command -v coredns' || { echo "coredns must not be in the image"; exit 1; }
+          echo "- dnsmasq binary present, CoreDNS removed" >> "$GITHUB_STEP_SUMMARY"
 
           # Generate a real AWG 3.1 config set and check the keys land in the
           # right sections. Tunnel activation is expected to fail on a CI
@@ -329,7 +331,7 @@ jobs:
           echo "- AWG 3.1 config generation correct" >> "$GITHUB_STEP_SUMMARY"
 
           # ---------------------------------------------------------------
-          # IPv6: addressing, exit-mode resolution, migration, CoreDNS filter.
+          # IPv6: addressing, exit-mode resolution, migration, dnsmasq AAAA filter.
           # GitHub runners have no IPv6 route, so auto must resolve to "off".
           echo "### IPv6 config generation" >> "$GITHUB_STEP_SUMMARY"
           start_awgci() {  # <extra docker run args...>
@@ -359,7 +361,10 @@ jobs:
           docker exec awgci grep -q '^Address = 10.13.13.1$' /config/wg_confs/wg0.conf || fail "default: server address not v4-only"
           docker exec awgci grep -qxF 'PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP' /config/wg_confs/wg0.conf || fail "default: PostUp differs from the pre-IPv6 one"
           docker exec awgci grep -qxF 'PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j DROP; ip6tables -D FORWARD -o %i -j DROP' /config/wg_confs/wg0.conf || fail "default: PostDown differs from the pre-IPv6 one"
-          docker exec awgci test ! -s /config/coredns/generated/ipv6.conf || fail "default: AAAA filter must be empty"
+          if docker exec awgci grep -q filter-AAAA /run/dnsmasq/dnsmasq.conf; then fail "default: AAAA filter must be off"; fi
+          docker exec awgci grep -qx "conf-dir=/config/dnsmasq,\*.conf" /run/dnsmasq/dnsmasq.conf || fail "default: dnsmasq drop-in dir not included"
+          docker exec awgci test -f /config/dnsmasq/README || fail "default: /config/dnsmasq/README missing"
+          if docker exec awgci test -e /config/coredns; then fail "default: /config/coredns must not be created"; fi
           docker logs awgci 2>&1 | grep -q 'Set IP6_SUBNET=auto to enable it' || fail "default: opt-in hint not logged"
           docker exec awgci grep -q '^ORIG_IP6_EXIT="disabled"$' /config/.donoteditthisfile || fail "default: IP6_EXIT not persisted as disabled"
           echo "  defaults: IPv6 disabled, pre-IPv6 output"
@@ -373,8 +378,7 @@ jobs:
           docker exec awgci grep -q 'icmp6-adm-prohibited' /config/wg_confs/wg0.conf || fail "PostUp lacks REJECT on a no-IPv6 runner"
           docker exec awgci grep -q 'MASQUERADE; ip6tables' /config/wg_confs/wg0.conf || fail "ip6tables rules not appended after v4 MASQUERADE"
           docker exec awgci grep -q 'ip6tables -A FORWARD -i %i -o %i -j ACCEPT; ip6tables -A FORWARD -i %i -j REJECT' /config/wg_confs/wg0.conf || fail "off: intra-tunnel ACCEPT must precede the REJECTs"
-          docker exec awgci grep -q 'template IN AAAA' /config/coredns/generated/ipv6.conf || fail "AAAA filter not written"
-          docker exec awgci grep -q 'import /config/coredns/generated' /config/coredns/Corefile || fail "Corefile lacks import"
+          docker exec awgci grep -qx filter-AAAA /run/dnsmasq/dnsmasq.conf || fail "AAAA filter not written"
           docker logs awgci 2>&1 | grep -q 'IPv6 exit: off (no IPv6 default route' || fail "auto did not log the off reason"
           docker exec awgci grep -q '^ORIG_IP6_SUBNET="fd0a:0d0d:0000::/64"$' /config/.donoteditthisfile || fail "IP6_SUBNET not persisted"
           docker exec awgci grep -q '^ORIG_IP6_EXIT="off"$' /config/.donoteditthisfile || fail "IP6_EXIT not persisted"
@@ -387,7 +391,7 @@ jobs:
           docker exec awgci grep -qxF 'PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth+ -j MASQUERADE; ip6tables -A FORWARD -i %i -j DROP; ip6tables -A FORWARD -o %i -j DROP' /config/wg_confs/wg0.conf || fail "off: PostUp differs from the pre-IPv6 one"
           docker exec awgci grep -qxF 'PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j DROP; ip6tables -D FORWARD -o %i -j DROP' /config/wg_confs/wg0.conf || fail "off: PostDown differs from the pre-IPv6 one"
           if docker exec awgci grep -q 'icmp6-adm-prohibited' /config/wg_confs/wg0.conf; then fail "off: REJECT rules present"; fi
-          docker exec awgci test ! -s /config/coredns/generated/ipv6.conf || fail "off: AAAA filter must be empty"
+          if docker exec awgci grep -q filter-AAAA /run/dnsmasq/dnsmasq.conf; then fail "off: AAAA filter must be off"; fi
           echo "  IP6_SUBNET=off: pre-IPv6 output"
 
           # 3. user prefix
@@ -405,7 +409,7 @@ jobs:
           start_awgci -e IP6_SUBNET=auto -e IP6_EXIT=routed
           docker exec awgci grep -q 'ip6tables -A FORWARD -i %i -j ACCEPT' /config/wg_confs/wg0.conf || fail "routed: no ACCEPT"
           if docker exec awgci grep -qE 'ip6tables -t nat|icmp6-adm-prohibited' /config/wg_confs/wg0.conf; then fail "routed: NAT or REJECT present"; fi
-          docker exec awgci test ! -s /config/coredns/generated/ipv6.conf || fail "routed: AAAA filter should be empty"
+          if docker exec awgci grep -q filter-AAAA /run/dnsmasq/dnsmasq.conf; then fail "routed: AAAA filter must be off"; fi
           echo "  IP6_EXIT=routed: ACCEPT only"
 
           # 6. old user templates are migrated
@@ -426,15 +430,15 @@ jobs:
           if docker logs awgci 2>&1 | grep -q 'migrated'; then fail "IPv6 off: templates must not be migrated"; fi
           docker exec awgci grep -q 'ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE$' /config/templates/server.conf || fail "IPv6 off: template altered"
           docker exec awgci grep -q 'ip6tables -t nat -A POSTROUTING -o eth+ -j MASQUERADE$' /config/wg_confs/wg0.conf || fail "IPv6 off: old template not rendered as-is"
-          if docker exec awgci grep -q 'import /config/coredns/generated' /config/coredns/Corefile; then fail "IPv6 off: Corefile altered"; fi
+          docker exec awgci grep -qx '    forward . /etc/resolv.conf' /config/coredns/Corefile || fail "old Corefile must be left untouched"
+          docker logs awgci 2>&1 | grep -q '/config/coredns is no longer used' || fail "stale /config/coredns not pointed out"
           echo "  old templates with IPv6 off: untouched"
           start_awgci -v awgci-cfg:/config -e IP6_SUBNET=auto
           docker logs awgci 2>&1 | grep -q 'migrated PostUp line' || fail "migration: PostUp not migrated"
           docker exec awgci grep -q 'fd0a:0d0d:0000::2/128' /config/peer1/peer1.conf || fail "migration: peer address missing after migration"
           docker exec awgci grep -q 'icmp6-adm-prohibited' /config/wg_confs/wg0.conf || fail "migration: REJECT missing after migration"
           if docker exec awgci grep -q 'ip6tables -A FORWARD -i %i -j ACCEPT' /config/wg_confs/wg0.conf; then fail "migration: old ACCEPT rules survived"; fi
-          docker exec awgci grep -q 'import /config/coredns/generated' /config/coredns/Corefile || fail "migration: old default Corefile not migrated"
-          echo "  old templates and Corefile: migrated"
+          echo "  old templates: migrated"
 
           # 6b. #36 DROP templates (what master ships between 656d987 and this PR) migrate too
           docker rm -f awgci >/dev/null 2>&1 || true
@@ -468,6 +472,32 @@ jobs:
           docker rm -f awgci >/dev/null 2>&1 || true
           docker volume rm -f awgci-cfg >/dev/null 2>&1 || true
           echo "- IPv6 config generation correct" >> "$GITHUB_STEP_SUMMARY"
+
+          # ---------------------------------------------------------------
+          # DNS toggle. The tunnel cannot come up on a runner, so dnsmasq never
+          # starts here; check what decides whether it would.
+          echo "### dnsmasq toggle" >> "$GITHUB_STEP_SUMMARY"
+          docker rm -f awgdns >/dev/null 2>&1 || true
+          docker run -d --name awgdns --cap-add NET_ADMIN test-image >/dev/null
+          for _ in $(seq 1 30); do
+            docker logs awgdns 2>&1 | grep -q 'Configuration complete' && break
+            sleep 2
+          done
+          [ "$(docker exec awgdns cat /run/s6/container_environment/USE_DNS)" = "false" ] \
+            || { echo "client mode: USE_DNS must default to false"; docker logs awgdns; exit 1; }
+          docker rm -f awgdns >/dev/null 2>&1 || true
+          docker run -d --name awgdns --cap-add NET_ADMIN -e PEERS=1 -e SERVERURL=ci.example.com -e USE_DNS=false test-image >/dev/null
+          for _ in $(seq 1 30); do
+            docker logs awgdns 2>&1 | grep -q 'Configuration complete' && break
+            sleep 2
+          done
+          docker logs awgdns 2>&1 | grep -q 'USE_DNS=false but PEERDNS is auto' \
+            || { echo "USE_DNS=false with PEERDNS=auto not warned"; docker logs awgdns; exit 1; }
+          docker exec awgdns dnsmasq --test -C /run/dnsmasq/dnsmasq.conf \
+            || { echo "generated dnsmasq config rejected"; exit 1; }
+          docker rm -f awgdns >/dev/null 2>&1 || true
+          echo "  client mode defaults USE_DNS=false; USE_DNS=false + PEERDNS=auto warned; config valid"
+          echo "- dnsmasq toggle correct" >> "$GITHUB_STEP_SUMMARY"
 
           echo "All smoke tests passed!" >> "$GITHUB_STEP_SUMMARY"
           echo "Smoke tests passed!"

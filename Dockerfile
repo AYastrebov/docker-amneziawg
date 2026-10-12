@@ -60,7 +60,7 @@ RUN \
   echo "**** install dependencies ****" && \
   apk add --no-cache \
     bc \
-    coredns \
+    dnsmasq \
     grep \
     iproute2 \
     iptables \

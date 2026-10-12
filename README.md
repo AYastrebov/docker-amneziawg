@@ -114,9 +114,9 @@ If you run the kernel datapath with `RandomTrailers`, use a module built from up
 
 The container runs in one of two modes, decided by whether `PEERS` is set.
 
-Set `PEERS` and you get server mode. The container generates keys, writes `wg0.conf`, writes one config and QR code per peer, and starts CoreDNS so peers on `PEERDNS=auto` have a resolver to talk to.
+Set `PEERS` and you get server mode. The container generates keys, writes `wg0.conf`, writes one config and QR code per peer, and starts dnsmasq so peers on `PEERDNS=auto` have a resolver to talk to.
 
-Leave `PEERS` unset and you get client mode. Drop your own `.conf` files into `./config/wg_confs/` and the container brings up every one of them on start. Nothing is generated, and CoreDNS stays off unless you ask for it.
+Leave `PEERS` unset and you get client mode. Drop your own `.conf` files into `./config/wg_confs/` and the container brings up every one of them on start. Nothing is generated, and dnsmasq stays off unless you ask for it.
 
 ```bash
 # client mode: your configs, nothing generated
@@ -142,7 +142,7 @@ docker run -d \
 | `-e SERVERURL=auto` | Server URL/IP for peer configs. `auto` detects external IP |
 | `-e SERVERPORT=51820` | Port advertised to peers. Use <= 9999 if your ISP blocks high UDP ports |
 | `-e PEERS=3` | Number or comma-separated names (`laptop,phone`). Enables server mode |
-| `-e PEERDNS=auto` | DNS for peers. `auto` = container's CoreDNS at subnet.1 |
+| `-e PEERDNS=auto` | DNS for peers. `auto` = the container's dnsmasq at subnet.1, which forwards to the container's own resolvers (`/etc/resolv.conf`, so Docker container names resolve too). Add `*.conf` files to `/config/dnsmasq/` for split DNS or local overrides (see the `README` there) |
 | `-e INTERNAL_SUBNET=10.13.13.0` | VPN subnet (.1 = server, .2+ = peers) |
 | `-e ALLOWEDIPS=0.0.0.0/0, ::/0` | Traffic peers route into the tunnel. Keep `::/0`, but note it only stops IPv6 leaking around the tunnel once `IP6_SUBNET` is set and the peer has imported its regenerated conf: without a tunnel IPv6 address most clients ignore the `::/0` route and use native IPv6. Narrow to specific subnets for split tunnelling |
 | `-e IP6_SUBNET=` | IPv6 inside the tunnel, **off by default**. `auto` = ULA derived from `INTERNAL_SUBNET` (`10.13.13.0` → `fd0a:0d0d:0000::/64`), or your own `<prefix>::/64`. Unset or `off` keeps IPv4-only peers. See [IPv6](#ipv6) |
@@ -150,7 +150,7 @@ docker run -d \
 | `-e PERSISTENTKEEPALIVE_PEERS=` | Which peers get keepalive: `all` or comma-separated names/numbers |
 | `-e SERVER_ALLOWEDIPS_PEER_X=` | Per-peer server AllowedIPs for site-to-site VPN |
 | `-e LOG_CONFS=true` | Show generated configs and QR codes in container logs |
-| `-e USE_COREDNS=true` | Enable or disable the built-in CoreDNS. Defaults to `true` in server mode and `false` in client mode. Auto-disables when port 53 is already bound, unless you set it explicitly. Setting it to `false` in server mode breaks DNS for peers on `PEERDNS=auto`, so point `PEERDNS` at a public resolver such as `1.1.1.1` if you do |
+| `-e USE_DNS=true` | Enable or disable the built-in dnsmasq. Defaults to `true` in server mode and `false` in client mode. Auto-disables when port 53 is already bound, unless you set it explicitly. Setting it to `false` in server mode breaks DNS for peers on `PEERDNS=auto`, so point `PEERDNS` at a public resolver such as `1.1.1.1` if you do. Replaces `USE_COREDNS`, which is no longer read |
 | `-e AWG_VERSION=2.0` | Protocol version: `2.0` (default, full DPI evasion), `3.0` (header protection and randomized timers), `3.1` (3.0 plus `RandomTrailers`) or `1.5` (legacy) |
 | `-e AWG_RANDOM_TRAILERS=` | `on`/`off`. Pads handshake packets to a random length. Works with any `AWG_VERSION`; defaults to `on` under `3.1`. Must match on every end. `off` omits the key |
 | `-e AWG_DISABLE_COOKIES=` | `on`/`off`. Stops cookie-reply messages under load. Works with any `AWG_VERSION`; always opt-in. Does not need to match. `off` omits the key |
@@ -260,7 +260,7 @@ IPv6 is **off by default**. Without it the container behaves exactly as
 earlier releases did: peers get IPv4 addresses only, and with the current
 default template any IPv6 they send into the tunnel (via `::/0` in
 `ALLOWEDIPS`) is dropped at the server. Existing installations are not touched
-on upgrade: templates and Corefile stay as they are until you opt in. That
+on upgrade: templates stay as they are until you opt in. That
 also means a user-owned template from an older release keeps whatever
 `ip6tables` rules it already has; the original template forwarded and
 masqueraded IPv6 rather than dropping it, and it goes on doing exactly that
@@ -417,21 +417,12 @@ either one, both are left alone, the log says so, and **IPv6 stays disabled**
 placeholders shown in `root/defaults/server.conf` yourself. A customised
 `Address` line is left alone with a warning.
 
-`/config/coredns/Corefile` is migrated automatically too, but only when it is
-the unmodified default of the previous release. If you edited it, add this
-line inside the server block yourself (the startup log reminds you when it is
-missing):
-
-```
-import /config/coredns/generated/*.conf
-```
-
-and restart. It is what activates AAAA suppression, so that peers using
-`PEERDNS=auto` never even try IPv6 while the exit is `off`.
-
-Skipping it is not a leak: IPv6 is still rejected at the server's firewall.
-The only cost is latency — a client gets an AAAA record, tries IPv6, gets an
-ICMPv6 reject and falls back to IPv4, instead of never trying.
+While the exit is `off`, the built-in dnsmasq strips AAAA records (empty
+`NOERROR` answers), so peers using `PEERDNS=auto` never even try IPv6. This
+needs no action: dnsmasq's base config is regenerated on every start. Peers
+on a `PEERDNS` of their own still get AAAA records; that is not a leak, since
+IPv6 is rejected at the server's firewall, but each connection pays for a
+failed IPv6 attempt before falling back to IPv4.
 
 ### Troubleshooting
 

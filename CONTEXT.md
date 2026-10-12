@@ -21,12 +21,12 @@ Both upstream versions are pinned as `ARG` defaults at the top of the Dockerfile
 ### s6-Overlay Service Chain
 
 ```
-init-config (LSIO) -> init-amneziawg-module (oneshot) -> init-amneziawg-confs (oneshot) -> svc-coredns (longrun) -> svc-amneziawg (oneshot)
+init-config (LSIO) -> init-amneziawg-module (oneshot) -> init-amneziawg-confs (oneshot) -> svc-amneziawg (oneshot) -> svc-dnsmasq (longrun)
 ```
 
 - **init-amneziawg-module**: Tests kernel support via `ip link add dev test type amneziawg` (the amnezia module's rtnl link kind — awg-quick creates `type amneziawg`, not `type wireguard`). Falls back to `amneziawg-go` userspace (exports `WG_QUICK_USERSPACE_IMPLEMENTATION`).
-- **init-amneziawg-confs**: Config generation using eval+heredoc template expansion from `/config/templates/`. Server mode generates keys, wg0.conf, peer configs, QR codes. Client mode disables CoreDNS.
-- **svc-coredns**: Longrun CoreDNS service with `notification-fd 3` health checks. Auto-disabled if port 53 already bound (and `USE_COREDNS` not explicitly set) or `USE_COREDNS=false`. In client mode, defaults to `false` unless overridden. Disabling in server mode breaks DNS for peers using `PEERDNS=auto` — set `PEERDNS` to a public resolver.
+- **init-amneziawg-confs**: Config generation using eval+heredoc template expansion from `/config/templates/`. Server mode generates keys, wg0.conf, peer configs, QR codes. Client mode disables dnsmasq; server mode writes its base config.
+- **svc-dnsmasq**: Longrun dnsmasq forwarder for peers on `PEERDNS=auto`. Depends on `svc-amneziawg`, so it starts once wg0 has its address (`interface=wg0` + `bind-dynamic` also rebinds when wg0 is recreated). Base config `/run/dnsmasq/dnsmasq.conf` is written by `write_dnsmasq_conf()` in init-amneziawg-confs on every start (container-owned, never in `/config`); users add `*.conf` drop-ins to `/config/dnsmasq/` via `conf-dir`. Forwards to `/etc/resolv.conf` — no `domain-needed`/`bogus-priv`, because single-label Docker container names must reach `127.0.0.11`. Validated with `dnsmasq --test` before exec; a broken drop-in logs once and sleeps instead of restart-looping. Auto-disabled if port 53 already bound (and `USE_DNS` not explicitly set) or `USE_DNS=false`. In client mode, defaults to `false` unless overridden. Disabling in server mode breaks DNS for peers using `PEERDNS=auto` — set `PEERDNS` to a public resolver. dnsmasq drops to the `dnsmasq` user, keeping only `CAP_NET_BIND_SERVICE`.
 - **svc-amneziawg**: Oneshot service (up/down scripts). Validates `[Interface]` in each .conf, activates tunnels, saves active confs to `/run/activeconfs` via `declare -p`. Finish script tears down in reverse order.
 
 Dependencies are declared via empty files in `dependencies.d/`. Services are registered via empty files in `user/contents.d/`.
@@ -49,7 +49,7 @@ Peer naming: numeric peers -> `peer1`, `peer2`; named peers -> `peer_laptop`, `p
 
 ### Client Mode (no PEERS)
 
-Uses manual `.conf` files from `/config/wg_confs/`. All `.conf` files are brought up on startup. CoreDNS is auto-disabled.
+Uses manual `.conf` files from `/config/wg_confs/`. All `.conf` files are brought up on startup. dnsmasq is auto-disabled.
 
 ## Volume Structure
 
@@ -64,8 +64,7 @@ Uses manual `.conf` files from `/config/wg_confs/`. All `.conf` files are brough
 ├── templates/            # User-customizable config templates
 │   ├── server.conf       # Server template (eval+heredoc expanded)
 │   └── peer.conf         # Peer template (eval+heredoc expanded)
-├── coredns/              # CoreDNS configuration
-│   └── Corefile
+├── dnsmasq/              # User dnsmasq drop-ins (*.conf), read after the generated base config
 ├── .donoteditthisfile    # Saved env vars for change detection
 ├── peer1/                # Numeric peer (PEERS=3)
 │   ├── peer1.conf
@@ -89,13 +88,12 @@ docker-amneziawg/
 │   │   └── show-peer                       # QR code display utility
 │   ├── defaults/
 │   │   ├── server.conf                     # Server template (eval+heredoc)
-│   │   ├── peer.conf                       # Peer template (eval+heredoc)
-│   │   └── Corefile                        # CoreDNS default config
+│   │   └── peer.conf                       # Peer template (eval+heredoc)
 │   └── etc/s6-overlay/s6-rc.d/
 │       ├── init-adduser/branding           # Custom container branding
 │       ├── init-amneziawg-module/          # Kernel module detection
 │       ├── init-amneziawg-confs/           # Config generation
-│       ├── svc-coredns/                    # CoreDNS service (longrun)
+│       ├── svc-dnsmasq/                    # dnsmasq service (longrun)
 │       └── svc-amneziawg/                  # Tunnel service (oneshot up/down)
 ├── awg0.conf.example                       # Example config
 └── .github/workflows/
@@ -210,7 +208,7 @@ With `IP6_SUBNET` set, 1280 is also a hard floor: Linux strips IPv6 from an inte
 - A `changes` gate job runs first and skips build+release when a push/PR touches nothing image-affecting. Image content is `Dockerfile`, `root/**`, `.dockerignore` and the workflow itself; docs, skills and compose examples never reach the image. Tag pushes, `workflow_dispatch` and unreachable-base diffs fail open (always build)
 - Push to `master`/`main` touching image paths -> multi-arch build (`amd64`, `arm64`) -> `ghcr.io/ayastrebov/docker-amneziawg:latest` + tools version tag
 - `v*` tags -> semantic version tags (`1.0.0`, `1.0`, `1`)
-- PRs -> smoke tests only (single-platform `--load` build): binaries, s6 structure, service types, dependency chain, CoreDNS, branding
+- PRs -> smoke tests only (single-platform `--load` build): binaries, s6 structure, service types, dependency chain, dnsmasq (CoreDNS absent), branding
 - `workflow_dispatch` accepts `amneziawg_go_version` and `amneziawg_tools_version` overrides
 
 ### upstream-check.yml
@@ -235,7 +233,7 @@ Container images are tagged with the upstream `amneziawg-tools` version (e.g., `
 | High CPU | Too many junk packets | Reduce AWG_JC value |
 | Connection fails after param change | Client/server mismatch | Redistribute updated peer configs to all clients |
 | ISP blocks VPN on high ports | Some ISPs block UDP > 9999 | Use SERVERPORT <= 9999 |
-| Peers have no DNS after `USE_COREDNS=false` | CoreDNS disabled but `PEERDNS=auto` still points peers at the container | Set `PEERDNS=1.1.1.1` (or another public resolver) when disabling CoreDNS |
+| Peers have no DNS after `USE_DNS=false` | dnsmasq disabled but `PEERDNS=auto` still points peers at the container | Set `PEERDNS=1.1.1.1` (or another public resolver) when disabling dnsmasq |
 | Tunnel connects but downloads are slow, pings fine | Full-size packets fragment: 1420 + 60/80 + S4 > path MTU | Set `MTU` explicitly: 1280 on ordinary paths, `path − 60 − S4` (IPv4) / `path − 80 − S4` (IPv6) when the path itself is constrained (a true 1280-byte path needs 1208/1188); see README "MTU" |
 
 ## External References
