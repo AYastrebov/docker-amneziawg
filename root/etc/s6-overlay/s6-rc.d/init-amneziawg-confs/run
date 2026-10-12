@@ -717,9 +717,14 @@ DUDE
     done
 }
 
+# <exit-effective> <interface>. An empty interface means every interface:
+# client mode names its tunnels after the user's conf files, and whoever
+# opts into USE_DNS=true there serves other containers or the LAN.
 write_dnsmasq_conf () {
-    local filter
+    local filter listen=""
     filter=$(ip6_dns_filter "$1")
+    [[ -n "$2" ]] && listen="interface=$2"$'\n'
+    [[ -n "${filter}" ]] && filter+=$'\n'
     mkdir -p /run/dnsmasq /config/dnsmasq
     if [[ ! -f /config/dnsmasq/README ]]; then
         cat <<'DUDE' > /config/dnsmasq/README
@@ -741,15 +746,12 @@ DUDE
 keep-in-foreground
 log-facility=-
 pid-file=
-interface=wg0
-bind-dynamic
-no-dhcp-interface=wg0
+${listen}bind-dynamic
 resolv-file=/etc/resolv.conf
 dns-loop-detect
 no-hosts
 cache-size=1000
-${filter}
-conf-dir=/config/dnsmasq,*.conf
+${filter}conf-dir=/config/dnsmasq,*.conf
 DUDE
 }
 
@@ -901,14 +903,23 @@ if [[ -n "$PEERS" ]]; then
     fi
 else
     echo "**** Client mode selected. ****"
-    USE_DNS="${USE_DNS,,}"
-    printf %s "${USE_DNS:-false}" > /run/s6/container_environment/USE_DNS
+    USE_DNS="${USE_DNS:-false}"
+    printf %s "${USE_DNS,,}" > /run/s6/container_environment/USE_DNS
 fi
 
 # dnsmasq: the base config is the container's and is rewritten on every start;
 # users customise through *.conf drop-ins in /config/dnsmasq. AAAA filter for
 # peers only when IPv6 exit is off; in client mode IP6_EXIT_EFFECTIVE is unset.
-write_dnsmasq_conf "${IP6_EXIT_EFFECTIVE:-}"
+if [[ "${USE_DNS,,}" != "false" ]]; then
+    if [[ -n "$PEERS" ]]; then
+        write_dnsmasq_conf "${IP6_EXIT_EFFECTIVE:-}" wg0
+    else
+        write_dnsmasq_conf "" ""
+    fi
+fi
+if [[ -n "${USE_COREDNS:-}" ]]; then
+    echo "**** USE_COREDNS is no longer read (CoreDNS was replaced by dnsmasq). Use USE_DNS instead ****"
+fi
 if [[ -d /config/coredns ]]; then
     echo "**** /config/coredns is no longer used (CoreDNS was replaced by dnsmasq) and can be deleted. Custom DNS settings go into /config/dnsmasq/*.conf ****"
 fi

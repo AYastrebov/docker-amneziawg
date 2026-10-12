@@ -363,6 +363,8 @@ jobs:
           docker exec awgci grep -qxF 'PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth+ -j MASQUERADE; ip6tables -D FORWARD -i %i -j DROP; ip6tables -D FORWARD -o %i -j DROP' /config/wg_confs/wg0.conf || fail "default: PostDown differs from the pre-IPv6 one"
           if docker exec awgci grep -q filter-AAAA /run/dnsmasq/dnsmasq.conf; then fail "default: AAAA filter must be off"; fi
           docker exec awgci grep -qx "conf-dir=/config/dnsmasq,\*.conf" /run/dnsmasq/dnsmasq.conf || fail "default: dnsmasq drop-in dir not included"
+          docker exec awgci grep -qx "interface=wg0" /run/dnsmasq/dnsmasq.conf || fail "default: dnsmasq not bound to wg0"
+          docker exec awgci dnsmasq --test -C /run/dnsmasq/dnsmasq.conf || fail "default: dnsmasq rejects its config"
           docker exec awgci test -f /config/dnsmasq/README || fail "default: /config/dnsmasq/README missing"
           if docker exec awgci test -e /config/coredns; then fail "default: /config/coredns must not be created"; fi
           docker logs awgci 2>&1 | grep -q 'Set IP6_SUBNET=auto to enable it' || fail "default: opt-in hint not logged"
@@ -379,6 +381,7 @@ jobs:
           docker exec awgci grep -q 'MASQUERADE; ip6tables' /config/wg_confs/wg0.conf || fail "ip6tables rules not appended after v4 MASQUERADE"
           docker exec awgci grep -q 'ip6tables -A FORWARD -i %i -o %i -j ACCEPT; ip6tables -A FORWARD -i %i -j REJECT' /config/wg_confs/wg0.conf || fail "off: intra-tunnel ACCEPT must precede the REJECTs"
           docker exec awgci grep -qx filter-AAAA /run/dnsmasq/dnsmasq.conf || fail "AAAA filter not written"
+          docker exec awgci dnsmasq --test -C /run/dnsmasq/dnsmasq.conf || fail "dnsmasq rejects the config with filter-AAAA"
           docker logs awgci 2>&1 | grep -q 'IPv6 exit: off (no IPv6 default route' || fail "auto did not log the off reason"
           docker exec awgci grep -q '^ORIG_IP6_SUBNET="fd0a:0d0d:0000::/64"$' /config/.donoteditthisfile || fail "IP6_SUBNET not persisted"
           docker exec awgci grep -q '^ORIG_IP6_EXIT="off"$' /config/.donoteditthisfile || fail "IP6_EXIT not persisted"
@@ -485,6 +488,18 @@ jobs:
           done
           [ "$(docker exec awgdns cat /run/s6/container_environment/USE_DNS)" = "false" ] \
             || { echo "client mode: USE_DNS must default to false"; docker logs awgdns; exit 1; }
+          docker exec awgdns test ! -e /config/dnsmasq \
+            || { echo "client mode without USE_DNS: /config/dnsmasq must not be created"; exit 1; }
+          docker rm -f awgdns >/dev/null 2>&1 || true
+          docker run -d --name awgdns --cap-add NET_ADMIN -e USE_DNS=true -e USE_COREDNS=true test-image >/dev/null
+          for _ in $(seq 1 30); do
+            docker logs awgdns 2>&1 | grep -q 'Configuration complete' && break
+            sleep 2
+          done
+          if docker exec awgdns grep -q '^interface=' /run/dnsmasq/dnsmasq.conf; then echo "client mode USE_DNS=true: must listen on all interfaces"; exit 1; fi
+          docker exec awgdns dnsmasq --test -C /run/dnsmasq/dnsmasq.conf || { echo "client mode: dnsmasq rejects its config"; exit 1; }
+          docker logs awgdns 2>&1 | grep -q 'USE_COREDNS is no longer read' \
+            || { echo "USE_COREDNS not warned about"; docker logs awgdns; exit 1; }
           docker rm -f awgdns >/dev/null 2>&1 || true
           docker run -d --name awgdns --cap-add NET_ADMIN -e PEERS=1 -e SERVERURL=ci.example.com -e USE_DNS=false test-image >/dev/null
           for _ in $(seq 1 30); do
@@ -493,10 +508,10 @@ jobs:
           done
           docker logs awgdns 2>&1 | grep -q 'USE_DNS=false but PEERDNS is auto' \
             || { echo "USE_DNS=false with PEERDNS=auto not warned"; docker logs awgdns; exit 1; }
-          docker exec awgdns dnsmasq --test -C /run/dnsmasq/dnsmasq.conf \
-            || { echo "generated dnsmasq config rejected"; exit 1; }
+          docker exec awgdns test ! -e /run/dnsmasq/dnsmasq.conf \
+            || { echo "USE_DNS=false: no dnsmasq config should be written"; exit 1; }
           docker rm -f awgdns >/dev/null 2>&1 || true
-          echo "  client mode defaults USE_DNS=false; USE_DNS=false + PEERDNS=auto warned; config valid"
+          echo "  client mode: USE_DNS=false by default, all interfaces when enabled; USE_COREDNS warned; USE_DNS=false + PEERDNS=auto warned"
           echo "- dnsmasq toggle correct" >> "$GITHUB_STEP_SUMMARY"
 
           echo "All smoke tests passed!" >> "$GITHUB_STEP_SUMMARY"

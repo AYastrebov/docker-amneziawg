@@ -4,7 +4,9 @@
 # USE_DNS unset means "on unless something else already has port 53" (e.g.
 # Pi-hole with host networking). Client mode writes USE_DNS=false unless the
 # user set it.
-if netstat -apn | grep -q ":53 " && [[ -z "${USE_DNS}" ]]; then
+# Listening sockets only: a TIME_WAIT left by a previous dnsmasq (s6
+# restarts it) is not a conflict.
+if netstat -lntu | grep -q ":53 " && [[ -z "${USE_DNS}" ]]; then
     echo "**** Port 53 is already in use, disabling dnsmasq. Set USE_DNS=true to force it ****"
     USE_DNS="false"
 fi
