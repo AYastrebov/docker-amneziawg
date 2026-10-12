@@ -1,0 +1,14 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# s6 runs this with the exit code of ./run as $1 (256 when killed by a
+# signal, which is the normal shutdown path). dnsmasq exits 2 when it cannot
+# bind its sockets ("Address in use"): a listener that appeared after the
+# port-53 probe, or a forced USE_DNS=true next to a conflicting resolver.
+# Exiting 125 tells s6-supervise not to restart the service (as if s6-svc -O
+# had been sent), so the reason is logged once instead of scrolling away in
+# a restart loop. The tunnel is unaffected.
+if [[ "$1" == "2" ]]; then
+    echo "**** dnsmasq could not bind port 53 (see above) and will not be restarted; DNS for peers is down. Free the port or set PEERDNS to a public resolver, then restart the container ****"
+    exit 125
+fi
+exit 0

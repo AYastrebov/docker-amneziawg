@@ -4,13 +4,14 @@
 # USE_DNS unset means "on unless something else already has port 53" (e.g.
 # Pi-hole with host networking). Client mode writes USE_DNS=false unless the
 # user set it, so this probe only runs in server mode, where dnsmasq binds
-# the wg0 address plus loopback (interface=wg0 adds lo). Only a wildcard or
-# loopback listener conflicts with that: systemd-resolved on 127.0.0.53 under
-# network_mode: host does not, and must not disable peer DNS.
+# the wg0 addresses and nothing else (interface=wg0 + except-interface=lo).
+# Only a wildcard listener can collide with that: a local resolver on
+# 127.0.0.1 or systemd-resolved on 127.0.0.53 under network_mode: host does
+# not, and must not disable peer DNS.
 # Listening sockets only: a TIME_WAIT left by a previous dnsmasq (s6
 # restarts it) is not a conflict.
-if [[ -z "${USE_DNS}" ]] && netstat -lntu | awk '{print $4}' | grep -qE '^(0\.0\.0\.0|127\.0\.0\.1|::|::1):53$'; then
-    echo "**** Port 53 is already bound on a wildcard or loopback address, disabling dnsmasq: peers on PEERDNS=auto have no DNS. Set USE_DNS=true to force it, or PEERDNS to a public resolver ****"
+if [[ -z "${USE_DNS}" ]] && netstat -lntu | awk '{print $4}' | grep -qE '^(0\.0\.0\.0|::):53$'; then
+    echo "**** Port 53 is already bound on a wildcard address, disabling dnsmasq: peers on PEERDNS=auto have no DNS. Set USE_DNS=true to force it, or PEERDNS to a public resolver ****"
     USE_DNS="false"
 fi
 
@@ -22,9 +23,13 @@ fi
 # Do not exec dnsmasq with a config it rejects (usually a broken drop-in in
 # /config/dnsmasq): s6 would restart-loop it and bury the reason in the churn.
 # The tunnel stays up either way.
-if ! dnsmasq --test -C /run/dnsmasq/dnsmasq.conf; then
+# Its "syntax check OK." only matters when it is not OK.
+if ! out=$(dnsmasq --test -C /run/dnsmasq/dnsmasq.conf 2>&1); then
+    printf '%s\n' "${out}"
     echo "**** dnsmasq rejected its config (see above), DNS for peers is down. Fix or remove the offending /config/dnsmasq/*.conf and restart ****"
     exec sleep infinity
 fi
 
+# A bind failure at runtime (exit 2) is handled by ./finish, which stops the
+# service instead of letting s6 respawn it every second.
 exec dnsmasq -C /run/dnsmasq/dnsmasq.conf

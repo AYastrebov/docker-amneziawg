@@ -720,11 +720,17 @@ DUDE
 # <exit-effective> <interface>. An empty interface means every interface:
 # client mode names its tunnels after the user's conf files, and whoever
 # opts into USE_DNS=true there serves other containers or the LAN.
+# With an interface, loopback is excluded too (interface= would add it):
+# peers never reach 127.0.0.1, and not holding it keeps a local resolver on
+# the host (network_mode: host) from colliding with us or vice versa.
 write_dnsmasq_conf () {
-    local listen=${2:+interface=$2$'\n'}
-    mkdir -p /run/dnsmasq /config/dnsmasq
+    local listen=${2:+interface=$2$'\n'except-interface=lo$'\n'}
+    mkdir -p /run/dnsmasq
+    # generate_confs leaves umask 077 behind for the peer keys; the drop-in
+    # directory and its README are for the host user to read and write.
+    (umask 022; mkdir -p /config/dnsmasq)
     if [[ ! -f /config/dnsmasq/README ]]; then
-        cat <<'DUDE' > /config/dnsmasq/README
+        (umask 022; cat <<'DUDE' > /config/dnsmasq/README
 Files ending in .conf in this directory are read by dnsmasq, the DNS
 forwarder peers use when PEERDNS=auto, after the container's own settings.
 One dnsmasq option per line, e.g.
@@ -734,6 +740,7 @@ See https://thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html
 Restart the container to apply changes. A broken file stops dnsmasq; the
 reason is in the container log.
 DUDE
+        )
     fi
     # No domain-needed/bogus-priv: single-label names must reach Docker's
     # resolver (127.0.0.11, via resolv.conf) so peers can resolve containers.
@@ -785,7 +792,11 @@ cleanup_legacy_coredns () {
         esac
     done < <(find "${dir}" -mindepth 1 -print0)
     if [[ "${keep}" == 1 ]]; then
-        echo "**** /config/coredns is no longer used (CoreDNS was replaced by dnsmasq); it was customised, so it is left in place and can be deleted. Custom DNS settings go into /config/dnsmasq/*.conf ****"
+        # Once, not on every start: the directory is the user's to keep.
+        if [[ ! -f /config/.legacy-coredns-noticed ]]; then
+            echo "**** /config/coredns is no longer used (CoreDNS was replaced by dnsmasq); it was customised, so it is left in place and can be deleted. Custom DNS settings go into /config/dnsmasq/*.conf ****"
+            : > /config/.legacy-coredns-noticed
+        fi
     else
         rm -rf "${dir}"
         echo "**** Removed /config/coredns: CoreDNS was replaced by dnsmasq and the directory held only the shipped defaults. Custom DNS settings go into /config/dnsmasq/*.conf ****"

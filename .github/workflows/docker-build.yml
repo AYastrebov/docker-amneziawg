@@ -50,7 +50,12 @@ jobs:
       - name: Check whether image-affecting paths changed
         id: filter
         run: |
-          IMAGE_PATHS='^(Dockerfile$|root/|\.dockerignore$|tests/smoke\.sh$|\.github/workflows/docker-build\.yml$)'
+          IMAGE_PATHS='^(Dockerfile$|root/|\.dockerignore$|\.github/workflows/docker-build\.yml$)'
+          # The smoke test only runs in the PR job; on master a change to it
+          # alone must not rebuild and push the image.
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            IMAGE_PATHS='^(Dockerfile$|root/|\.dockerignore$|tests/smoke\.sh$|\.github/workflows/docker-build\.yml$)'
+          fi
 
           # Anything that is not a plain branch push builds unconditionally:
           # tag pushes (semver releases), manual dispatch (version overrides).
@@ -83,7 +88,7 @@ jobs:
             echo "build: yes (image-affecting paths changed)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "image=false" >> "$GITHUB_OUTPUT"
-            echo "build: skipped — no changes to Dockerfile, root/, .dockerignore, tests/smoke.sh or this workflow" >> "$GITHUB_STEP_SUMMARY"
+            echo "build: skipped — no changes to Dockerfile, root/, .dockerignore or this workflow (tests/smoke.sh counts on pull requests only)" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   unit-tests:

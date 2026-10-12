@@ -74,7 +74,7 @@ docker exec amneziawg nslookup example.com 10.13.13.1
 docker logs amneziawg 2>&1 | grep -i dnsmasq      # disabled? config rejected?
 ```
 
-dnsmasq starts after the tunnel step whether or not the tunnel came up, but a failed tunnel deletes the container's default route, so upstream lookups fail too — fix the tunnel first. If it was disabled because port 53 was already bound on a wildcard or loopback address at startup (`127.0.0.53` from `systemd-resolved` does not count), set `USE_DNS=true` explicitly or change `PEERDNS` to a public resolver like `1.1.1.1`. If the log says dnsmasq rejected its config, a drop-in in `/config/dnsmasq/*.conf` is broken.
+dnsmasq starts after the tunnel step whether or not the tunnel came up, but a failed tunnel deletes the container's default route, so upstream lookups fail too — fix the tunnel first. If it was disabled because port 53 was already bound on a wildcard address at startup (loopback resolvers such as `systemd-resolved` on `127.0.0.53` do not count: server mode binds `wg0` only), or stopped because the bind failed when it started (logged once, no restart loop), set `USE_DNS=true` explicitly or change `PEERDNS` to a public resolver like `1.1.1.1`. If the log says dnsmasq rejected its config, a drop-in in `/config/dnsmasq/*.conf` is broken.
 
 ## Amnezia app reports "AWG 1.5" but we deployed 2.0
 
