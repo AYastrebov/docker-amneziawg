@@ -90,8 +90,8 @@ services:
       # - AWG_RANDOM_TRAILERS=on                # Random-length handshake packets. Defaults to "on" when AWG_VERSION=3.1. Must match on every end
       # - AWG_DISABLE_COOKIES=on                # No cookie-reply under load. Always opt-in; gives up DoS mitigation. Need not match
 
-      # ---- CoreDNS ----
-      # - USE_COREDNS=true                  # Enable CoreDNS (auto in server mode)
+      # ---- DNS (dnsmasq) ----
+      # - USE_DNS=true                      # Enable dnsmasq for PEERDNS=auto (default: on in server mode, off in client mode)
     volumes:
       - ./config:/config
     ports:
