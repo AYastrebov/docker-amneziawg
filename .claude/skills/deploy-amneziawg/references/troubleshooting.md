@@ -66,14 +66,15 @@ sudo iptables -t nat -A POSTROUTING -s 10.13.13.0/24 -o eth0 -j MASQUERADE
 
 ### Client sees the tunnel as connected but can't resolve DNS
 
-The peer is trying to resolve via `PEERDNS`. If `PEERDNS=auto`, the container's CoreDNS at `10.13.13.1` should answer. Check:
+The peer is trying to resolve via `PEERDNS`. If `PEERDNS=auto`, the container's dnsmasq at `10.13.13.1` should answer. Check:
 
 ```bash
-docker exec amneziawg netstat -ulnp | grep :53   # CoreDNS should be listening
-docker exec amneziawg cat /config/coredns/Corefile
+docker exec amneziawg netstat -ulnp | grep :53   # dnsmasq should be listening on 10.13.13.1
+docker exec amneziawg nslookup example.com 10.13.13.1
+docker logs amneziawg 2>&1 | grep -i dnsmasq      # disabled? config rejected?
 ```
 
-If CoreDNS is not running (port 53 was already bound at startup), set `USE_COREDNS=true` explicitly or change `PEERDNS` to a public resolver like `1.1.1.1`.
+dnsmasq starts after the tunnel step whether or not the tunnel came up, but a failed tunnel deletes the container's default route, so upstream lookups fail too — fix the tunnel first. If it was disabled because port 53 was already bound on a wildcard address at startup (loopback resolvers such as `systemd-resolved` on `127.0.0.53` do not count: server mode binds `wg0` only), or stopped because the bind failed when it started (logged once, no restart loop), set `USE_DNS=true` explicitly or change `PEERDNS` to a public resolver like `1.1.1.1`. If the log says dnsmasq rejected its config, a drop-in in `/config/dnsmasq/*.conf` is broken.
 
 ## Amnezia app reports "AWG 1.5" but we deployed 2.0
 
@@ -204,4 +205,4 @@ docker compose up -d  # re-randomizes AWG_* and rewrites configs, but server key
 - **`IPv6 exit: routed` logged, peers have an IPv6 address, IPv6 never works** — a global `IP6_SUBNET` made `auto` pick `routed`, which only writes two `ACCEPT` rules and cannot check the return path. The provider must route the `/64` to the host, and on the default bridge network the host must route it on to the container (fixed `ipv6_address` plus `ip -6 route add <prefix>::/64 via <that address>`). Test from the host with `ping -6 <prefix>::2` while a peer is connected. README "IPv6 › Routed global prefix"; or use `IP6_SUBNET=auto` (ULA + NAT66) instead.
 - **IPv6 sites hang on peers** — the exit is `off` and `net.ipv6.conf.all.forwarding=1` is not set, so the kernel drops IPv6 silently instead of refusing it. Add the sysctl to compose `sysctls:`. `PEERDNS=auto` peers are mostly spared (no AAAA records); peers with a public resolver or dialling IPv6 literals are not. Enabling IPv6 egress also fixes it.
 - **`RTNETLINK answers: No such device` on `ip -6 route add`, right after `ip link set mtu`, and the tunnel is down** — MTU below 1280 on an interface that carries an IPv6 address; the kernel strips IPv6 under the minimum. The container keeps IPv6 off when a template pins such a value (log names the file), so this means a hand-edited generated conf or a client conf lowered after export. Use `MTU = 1280` or higher wherever a conf has an IPv6 address; a client on a 1280-byte path that needs 1208 must stay IPv4-only or use an IPv6 endpoint. README "IPv6 › MTU floor".
-- **AAAA records still come back on an upgraded deployment** — once `IP6_SUBNET` is set, an unmodified pre-IPv6 `/config/coredns/Corefile` gets the import line automatically, but a customised one does not. Add `import /config/coredns/generated/*.conf` inside the server block by hand and restart; the startup log says the same. Skipping it is not a leak (IPv6 is still blocked at the server) — clients just try IPv6 before falling back, instead of never trying.
+- **AAAA records still come back while the exit is `off`** — only peers using `PEERDNS=auto` get filtered answers (dnsmasq `filter-AAAA`, check `/run/dnsmasq/dnsmasq.conf`). Peers with their own resolver get AAAA records; that is not a leak (IPv6 is still blocked at the server), clients just try IPv6 before falling back.

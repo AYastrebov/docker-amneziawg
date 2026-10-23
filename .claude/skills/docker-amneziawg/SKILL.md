@@ -36,12 +36,11 @@ docker-amneziawg/
 │   │   └── ipv6-lib.sh           # IPv6 prefix/exit-mode resolution, template migration (sourced, unit-tested)
 │   ├── defaults/
 │   │   ├── server.conf           # Server config template (eval+heredoc)
-│   │   ├── peer.conf             # Peer config template (eval+heredoc)
-│   │   └── Corefile              # CoreDNS default config
+│   │   └── peer.conf             # Peer config template (eval+heredoc)
 │   └── etc/s6-overlay/s6-rc.d/
 │       ├── init-amneziawg-module/    # Kernel module detection (oneshot)
 │       ├── init-amneziawg-confs/     # Config generation (oneshot)
-│       ├── svc-coredns/              # CoreDNS service (longrun)
+│       ├── svc-dnsmasq/              # dnsmasq DNS forwarder for peers (longrun)
 │       ├── svc-amneziawg/            # Tunnel service (oneshot up/down)
 │       └── user/contents.d/          # Service registration (empty files)
 ├── tests/
@@ -55,12 +54,12 @@ docker-amneziawg/
 
 ### Service Dependency Chain
 ```
-init-amneziawg-module (oneshot) -> init-amneziawg-confs (oneshot) -> svc-coredns (longrun) -> svc-amneziawg (oneshot)
+init-amneziawg-module (oneshot) -> init-amneziawg-confs (oneshot) -> svc-amneziawg (oneshot) -> svc-dnsmasq (longrun)
 ```
 
 Key points:
 - `svc-amneziawg` is a **oneshot** — tunnels stay up without a running process
-- `svc-coredns` is a **longrun** — continuously serves DNS for peers
+- `svc-dnsmasq` is a **longrun** — serves DNS for peers; starts after the tunnel step (even if the tunnel failed; `bind-dynamic` picks wg0 up whenever it appears). Base config is generated into `/run/dnsmasq/dnsmasq.conf` each start; users customise via `/config/dnsmasq/*.conf`
 - Dependencies: empty files in `dependencies.d/`. Registration: empty files in `user/contents.d/`
 
 ### Script Requirements
@@ -76,7 +75,7 @@ Key points:
 | `SERVERURL` | auto | Server URL/IP for peer configs |
 | `SERVERPORT` | 51820 | Port advertised to peers. Use <= 9999 if ISP blocks high UDP |
 | `INTERNAL_SUBNET` | 10.13.13.0 | VPN subnet (.1 = server, .2+ = peers) |
-| `PEERDNS` | auto | DNS for peers (auto = container's CoreDNS at subnet.1) |
+| `PEERDNS` | auto | DNS for peers (auto = container's dnsmasq at subnet.1) |
 | `LOG_CONFS` | true | Show QR codes in container logs |
 | `AWG_VERSION` | 2.0 | Protocol version: 2.0 (full DPI evasion), 3.0 (header protection + randomized timers), 3.1 (3.0 + RandomTrailers) or 1.5 (legacy, AmneziaVPN < 4.8.12.9) |
 | `AWG_RANDOM_TRAILERS` | - | `on`/`off`. Random-length handshake packets. Any AWG_VERSION; defaults to `on` under 3.1. Must match on every end. **Requires `S1 == S2 == S3 == S4`** under AWG 2.0+ or ~3.5% of transport packets are dropped — see [awg-performance.md](../../../docs/awg-performance.md) |

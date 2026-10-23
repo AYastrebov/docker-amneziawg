@@ -495,51 +495,18 @@ ip6_migrate_templates "$TMPD/marker.conf" "$TMPD/peer.conf" > "$TMPD/log"
 assert_eq "" "$(cat "$TMPD/log")" "marker present -> silent"
 assert_eq "1" "$IP6_TEMPLATE_READY" "marker present -> ready"
 
-# ---- coredns filter ----------------------------------------------------
-CD="$TMPD/coredns"; mkdir -p "$CD"
-printf '. {\n    forward . /etc/resolv.conf\n}\n' > "$CD/Corefile"
-log=$(ip6_write_coredns_filter off "$CD")
-assert_contains "$(cat "$CD/generated/ipv6.conf")" 'template IN AAAA .' "off -> AAAA filter written"
-assert_contains "$(cat "$CD/generated/ipv6.conf")" 'rcode NOERROR' "filter answers NOERROR"
-assert_contains "$log" 'import /config/coredns/generated/*.conf' "custom Corefile gets a hint"
-
-log=$(ip6_write_coredns_filter nat "$CD")
-assert_eq "" "$(cat "$CD/generated/ipv6.conf")" "nat -> filter cleared"
-assert_eq "0" "$(ip6_write_coredns_filter routed "$CD"; wc -c < "$CD/generated/ipv6.conf" | tr -d ' ')" "routed -> filter cleared"
-
-printf '. {\n    import /config/coredns/generated/*.conf\n    forward . /etc/resolv.conf\n}\n' > "$CD/Corefile"
-log=$(ip6_write_coredns_filter off "$CD")
-assert_eq "" "$log" "Corefile with import -> no hint"
-printf '. {\n    # import /config/coredns/generated/*.conf\n    forward . /etc/resolv.conf\n}\n' > "$CD/Corefile"
-log=$(ip6_write_coredns_filter off "$CD")
-assert_contains "$log" 'has no' "commented-out import still gets the hint"
-printf '. {\n\timport /config/coredns/generated/*.conf\n    forward . /etc/resolv.conf\n}\n' > "$CD/Corefile"
-log=$(ip6_write_coredns_filter off "$CD")
-assert_eq "" "$log" "tab-indented import is active"
-
-rm -rf "$CD"; mkdir -p "$CD"
-log=$(ip6_write_coredns_filter off "$CD")
-assert_contains "$(cat "$CD/generated/ipv6.conf")" 'template IN AAAA' "works before Corefile exists"
-assert_eq "" "$log" "no Corefile -> no hint"
-
-# unmodified pre-IPv6 Corefile is migrated to the new default; customised is not
-printf '%s\n' "$IP6_OLD_COREFILE" > "$CD/Corefile"
-log=$(ip6_migrate_corefile "$CD/Corefile" "$HERE/../root/defaults/Corefile")
-assert_eq "$(cat "$HERE/../root/defaults/Corefile")" "$(cat "$CD/Corefile")" "old default Corefile replaced by new default"
-assert_contains "$log" 'added' "Corefile migration logged"
-log=$(ip6_migrate_corefile "$CD/Corefile" "$HERE/../root/defaults/Corefile")
-assert_eq "" "$log" "Corefile migration is idempotent"
-printf '. {\n    forward . 1.1.1.1\n}\n' > "$CD/Corefile"
-log=$(ip6_migrate_corefile "$CD/Corefile" "$HERE/../root/defaults/Corefile")
-assert_eq "" "$log" "customised Corefile left alone"
-assert_contains "$(cat "$CD/Corefile")" 'forward . 1.1.1.1' "customised Corefile untouched"
+# ---- dnsmasq filter ----------------------------------------------------
+assert_eq "filter-AAAA" "$(ip6_dns_filter off)" "off -> filter-AAAA"
+assert_eq "" "$(ip6_dns_filter nat)" "nat -> no filter"
+assert_eq "" "$(ip6_dns_filter routed)" "routed -> no filter"
+assert_eq "" "$(ip6_dns_filter disabled)" "disabled (IPv6 not requested) -> no filter"
+ip6_dns_filter nat; assert_eq "0" "$?" "no filter still returns 0 (safe under set -e)"
 
 # ---- shipped defaults match the migration targets -----------------------
 assert_eq "1" "$(grep -Fxc -- "$IP6_NEW_SERVER_ADDRESS" "$HERE/../root/defaults/server.conf")" "defaults/server.conf Address == IP6_NEW_SERVER_ADDRESS"
 assert_eq "1" "$(grep -Fxc -- "$IP6_NEW_POSTUP" "$HERE/../root/defaults/server.conf")" "defaults/server.conf PostUp == IP6_NEW_POSTUP"
 assert_eq "1" "$(grep -Fxc -- "$IP6_NEW_POSTDOWN" "$HERE/../root/defaults/server.conf")" "defaults/server.conf PostDown == IP6_NEW_POSTDOWN"
 assert_eq "1" "$(grep -Fxc -- "$IP6_NEW_PEER_ADDRESS" "$HERE/../root/defaults/peer.conf")" "defaults/peer.conf Address == IP6_NEW_PEER_ADDRESS"
-assert_eq "1" "$(grep -Fc -- "$IP6_COREDNS_IMPORT" "$HERE/../root/defaults/Corefile")" "defaults/Corefile has import"
 
 echo "PASS ${PASS} / FAIL ${FAIL}"
 [[ $FAIL -eq 0 ]]
