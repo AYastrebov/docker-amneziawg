@@ -63,7 +63,7 @@ data/
 *.log
 
 # Skill evaluation scratch (run outputs, timings, generated test configs)
-.claude/skills/*-workspace/
+.agents/skills/*-workspace/
 
 # Python bytecode from running the skill scripts
 __pycache__/
