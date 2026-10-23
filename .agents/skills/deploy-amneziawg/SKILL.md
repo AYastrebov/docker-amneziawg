@@ -113,10 +113,8 @@ This is the part most users don't understand. Read `references/awg-params.md` fo
 
 **Default recommendation: don't touch any AWG_* params.** The container auto-generates good values on first start (S1-S4, H1-H4 as quadrant ranges, I1 as a QUIC Initial packet matching RFC 9000). All of these get persisted to `/config/server/awg_params` and reused on restart.
 
-> [!WARNING]
-> **That default is not safe for `AWG_VERSION=3.1` yet.** Auto-generation emits `RandomTrailers=on` alongside independently-drawn `S1`-`S4` and a `ContentPaddingAddition` range. `RandomTrailers` relaxes the receiver's packet-type check to a length lower bound, so with unequal `S` values ~3.5% of transport packets are misclassified and dropped — **measured upload falls from ~100 to ~2 Mbit/s**, and `ContentPaddingAddition` costs a further ~22% of download.
->
-> If the user wants 3.1, **pin the parameters** with `scripts/gen-awg-params.sh --version 3.1` instead of leaving them to the container. That emits `S1 = S2 = S3 = S4` and `AWG_CONTENT_PADDING=0`. Full analysis and measurements: [`docs/awg-performance.md`](../../../docs/awg-performance.md).
+> [!NOTE]
+> Under `AWG_VERSION=3.1` the container draws `S1 = S2 = S3 = S4` and sets `AWG_CONTENT_PADDING=0`, which `RandomTrailers` needs. With unequal `S` values ~3.5% of transport packets are dropped and upload falls from ~100 to ~2 Mbit/s. If the user pins S values by hand, make them equal; `scripts/gen-awg-params.sh --version 3.1` does this. Details: [`docs/awg-performance.md`](../../../docs/awg-performance.md).
 
 Ask the user only:
 

@@ -1,17 +1,17 @@
 ---
 name: amneziawg-config
 description: >-
-  Generate and validate AmneziaWG (AWG) VPN configs for protocol versions 1.5, 2.0, 3.0 and 3.1 —
+  Generate and validate AmneziaWG (AWG) configs for versions 1.5, 2.0, 3.0 and 3.1 —
   server and peer .conf files, keys, and every obfuscation parameter (Jc/Jmin/Jmax, S1-S4, H1-H4,
   I1-I5, HeaderProtectionKey, ContentPaddingAddition, RandomTrailers, DisableCookies) plus MTU.
   Use this whenever the user is creating, editing, reviewing or debugging an AmneziaWG setup —
   including "set up AmneziaWG", "generate AWG obfuscation parameters", "what should S4 be",
-  "my AmneziaWG tunnel is slow", "upload is way slower than download on my VPN", "AWG 3.1 config",
-  "my peers won't connect after I changed the params", or any time you see a .conf containing
-  Jc/S1/H1/I1 keys. Use it before hand-writing or hand-editing any AWG parameter: several
-  constraints interact in non-obvious ways and getting them wrong silently costs ~98% of upload
+  "my AmneziaWG tunnel is slow", "upload is way slower than download", "AWG 3.1 config",
+  "peers won't connect after I changed the params", or any time you see a .conf with
+  Jc/S1/H1/I1 keys. Use it before hand-writing or hand-editing any AWG parameter: some
+  constraints interact non-obviously and getting them wrong silently costs ~98% of upload
   throughput while the tunnel still appears to work. Works standalone with any AmneziaWG
-  deployment (kernel module, amneziawg-go, Amnezia app, router, Docker). Not for plain WireGuard
+  deployment (kernel, amneziawg-go, Amnezia app, router, Docker). Not for plain WireGuard
   configs that have no obfuscation parameters.
 ---
 
